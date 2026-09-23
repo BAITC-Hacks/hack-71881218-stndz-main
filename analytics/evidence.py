@@ -50,6 +50,22 @@ def add_role_evidence(nodes_roles: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def quality_flags_for_node(record: dict | pd.Series) -> list[str]:
+    """Return stable data-quality flags shared by JSON and top-node why."""
+    flags = []
+    if record["truncated_by_depth"]:
+        flags.append("truncated_by_depth")
+    if record["is_seed"]:
+        flags.append("seed_inflow_incomplete")
+    if record["out_kzt"] > record["in_kzt"]:
+        flags.append("outflow_exceeds_inflow")
+    if record["in_deg"] == config.ZERO and record["out_deg"] == config.ZERO:
+        flags.append("isolated")
+    if record["ext_inflow"] >= config.EXTERNAL_FUNDING_THRESHOLD_KZT:
+        flags.append("external_funding")
+    return flags
+
+
 def _explain_role(record: dict) -> str:
     role = record["role"]
     in_degree = int(record["in_deg"])
@@ -80,10 +96,18 @@ def _explain_role(record: dict) -> str:
         )
     if role == "transit":
         ratio = _format_percent(float(record["pass_through"]))
-        return (
+        text = (
             f"Признаки транзита: получено {in_amount}, отправлено {out_amount} KZT; "
             f"передано дальше {ratio}% входящего потока."
         )
+        fast_share = record.get("fast_share")
+        if pd.notna(fast_share):
+            fast_share_percent = _format_percent(float(fast_share))
+            text += (
+                f" {fast_share_percent}% исходящих сумм попали в окно "
+                f"{config.FAST_TRANSFER_WINDOW_DAYS} дней после входящего."
+            )
+        return text
     if role == "terminal":
         retention = _format_percent(float(record["retention"]))
         return (

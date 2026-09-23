@@ -38,7 +38,7 @@ CSV — источник истины для жюри. `graph.json` — прои
 
 `depth`, `is_seed`, `in_deg`, `out_deg`, `in_kzt`, `out_kzt`, `in_tx`, `out_tx`, `pass_through`, `retention`, `ext_inflow`, `seed_payers`, `seed_reach2`, `pagerank`, `betweenness`, `component_id`, `component_size`, `fast_share`, `sync_in_max`, `truncated_by_depth`.
 
-`pass_through` — единственная колонка, где допустим NaN (42 узла с `in_kzt == 0`). В `graph.json` сериализуется как `null`.
+`pass_through` может быть NaN у 42 узлов с `in_kzt == 0`; `fast_share` — у узлов без наблюдаемых исходящих транзакций (1 554 узла в текущих данных). В `graph.json` оба значения сериализуются как `null`; при расчёте приоритета неопределённый `fast_share` трактуется как 0. `sync_in_max` — максимум разных плательщиков за календарный день и равен 0 при отсутствии входящих транзакций.
 
 **`role` — словарь.** Шесть ролей обязательны по ТЗ. `boundary` — задокументированное расширение словаря: узлы, на которых обход остановился (`depth == 4`, `out_deg == 0`). Их **нельзя** трактовать как конечных получателей.
 

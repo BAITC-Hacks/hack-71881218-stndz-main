@@ -9,19 +9,8 @@ import numpy as np
 import pandas as pd
 
 from analytics import config
+from analytics.evidence import quality_flags_for_node
 from analytics.graph import GraphContext
-
-
-def add_pending_priority_field(nodes_roles: pd.DataFrame) -> pd.DataFrame:
-    """Add the priority column that is implemented in a later phase."""
-    result = nodes_roles.copy()
-    result["priority_score"] = config.PRIORITY_SCORE_PLACEHOLDER
-    return result
-
-
-def make_empty_top_nodes() -> pd.DataFrame:
-    """Return the schema-only top-node table until priority ranking is implemented."""
-    return pd.DataFrame(columns=config.TOP_NODE_EXPORT_COLUMNS)
 
 
 def write_csv_exports(
@@ -75,6 +64,7 @@ def _feature_lookup(nodes_roles: pd.DataFrame) -> dict[int, dict[str, Any]]:
 def build_graph_payload(
     nodes_roles: pd.DataFrame,
     clusters: pd.DataFrame,
+    top_nodes: pd.DataFrame,
     edges: pd.DataFrame,
     transactions: pd.DataFrame,
     context: GraphContext,
@@ -86,6 +76,14 @@ def build_graph_payload(
     role_rows = _feature_lookup(nodes_roles)
     if set(nodes_roles["cluster_id"]) != set(clusters["cluster_id"]):
         raise ValueError("Node and cluster exports do not share the same cluster IDs")
+    if top_nodes["gid"].isna().any() or top_nodes["gid"].duplicated().any():
+        raise ValueError("Top-node export must contain unique, non-null gids")
+    if not set(top_nodes["gid"].astype("int64")).issubset(role_rows):
+        raise ValueError("Top-node export contains gids missing from node exports")
+    rank_by_gid = {
+        int(row.gid): int(row.rank)
+        for row in top_nodes.itertuples(index=False)
+    }
     transaction_dates = (
         transactions.groupby(["src", "dst"], as_index=False, sort=True)
         .agg(first_date=("date", "min"), last_date=("date", "max"))
@@ -114,24 +112,11 @@ def build_graph_payload(
                 "seed_reach2",
                 "pagerank",
                 "betweenness",
+                "fast_share",
+                "sync_in_max",
             )
         }
-        metrics.update(
-            {
-                "fast_share": None,
-            }
-        )
-        flags = []
-        if row["truncated_by_depth"]:
-            flags.append("truncated_by_depth")
-        if row["is_seed"]:
-            flags.append("seed_inflow_incomplete")
-        if row["out_kzt"] > row["in_kzt"]:
-            flags.append("outflow_exceeds_inflow")
-        if row["in_deg"] == config.ZERO and row["out_deg"] == config.ZERO:
-            flags.append("isolated")
-        if row["ext_inflow"] >= config.EXTERNAL_FUNDING_THRESHOLD_KZT:
-            flags.append("external_funding")
+        flags = quality_flags_for_node(row)
 
         json_nodes.append(
             {
@@ -142,7 +127,7 @@ def build_graph_payload(
                 "role_score": _json_value(row["role_score"]),
                 "cluster_id": _json_value(row["cluster_id"]),
                 "priority_score": _json_value(row["priority_score"]),
-                "rank": None,
+                "rank": rank_by_gid.get(gid),
                 "evidence": row["evidence"],
                 "metrics": metrics,
                 "flags": flags,

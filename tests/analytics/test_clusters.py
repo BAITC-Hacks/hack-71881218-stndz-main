@@ -8,11 +8,13 @@ import pytest
 from analytics import config
 from analytics.clusters import assign_communities, build_cluster_hypothesis
 from analytics.evidence import add_role_evidence
-from analytics.export import add_pending_priority_field, build_graph_payload
+from analytics.export import build_graph_payload
 from analytics.features import add_structural_features
 from analytics.graph import build_foundation_features, build_graph
 from analytics.loader import load_data, validate_data
+from analytics.priority import add_priority_scores, build_top_nodes
 from analytics.roles import assign_roles
+from analytics.temporal import add_temporal_features
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,10 +27,12 @@ def graph_artifacts():
     context = build_graph(nodes, edges)
     features = build_foundation_features(nodes, context)
     features = add_structural_features(features, context)
+    features = add_temporal_features(features, transactions)
     nodes_roles = add_role_evidence(assign_roles(features))
-    nodes_roles = add_pending_priority_field(nodes_roles)
+    nodes_roles = add_priority_scores(nodes_roles)
     nodes_roles, clusters = assign_communities(nodes_roles, edges, context.graph)
-    return nodes_roles, clusters, edges, transactions, context
+    top_nodes = build_top_nodes(nodes_roles)
+    return nodes_roles, clusters, top_nodes, edges, transactions, context
 
 
 @pytest.mark.parametrize(
@@ -80,7 +84,7 @@ def test_cluster_hypothesis_precedence_and_counts(
 
 
 def test_communities_cover_graph_and_match_audited_counts(graph_artifacts) -> None:
-    nodes_roles, clusters, _, _, context = graph_artifacts
+    nodes_roles, clusters, _, _, _, context = graph_artifacts
 
     assert len(nodes_roles) == config.EXPECTED_NODE_COUNT
     assert nodes_roles["gid"].is_unique
@@ -101,7 +105,7 @@ def test_communities_cover_graph_and_match_audited_counts(graph_artifacts) -> No
 
 
 def test_cluster_flow_top_gids_and_csv_are_deterministic(graph_artifacts) -> None:
-    nodes_roles, clusters, edges, _, context = graph_artifacts
+    nodes_roles, clusters, _, edges, _, context = graph_artifacts
     cluster_by_gid = nodes_roles.set_index("gid")["cluster_id"]
     edge_clusters = edges.assign(
         src_cluster=edges["src"].map(cluster_by_gid),
@@ -148,9 +152,16 @@ def test_cluster_flow_top_gids_and_csv_are_deterministic(graph_artifacts) -> Non
 
 
 def test_graph_json_exports_cluster_contract(graph_artifacts) -> None:
-    nodes_roles, clusters, edges, transactions, context = graph_artifacts
+    nodes_roles, clusters, top_nodes, edges, transactions, context = graph_artifacts
 
-    payload = build_graph_payload(nodes_roles, clusters, edges, transactions, context)
+    payload = build_graph_payload(
+        nodes_roles,
+        clusters,
+        top_nodes,
+        edges,
+        transactions,
+        context,
+    )
     json.dumps(payload, allow_nan=False)
 
     assert payload["meta"]["clusters"] == config.EXPECTED_COMMUNITY_COUNT
