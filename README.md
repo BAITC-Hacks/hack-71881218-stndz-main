@@ -211,7 +211,7 @@ API ничего не пересчитывает: при старте читае
 
 ### Ассистент: `POST /api/ask`
 
-Без ключа сразу работает разбор типовых вопросов по правилам. Пример в Bash:
+Без настройки LLM работает разбор типовых вопросов по правилам. Локальная модель Ollama работает в режиме `llm` без ключа — см. ниже. Пример в Bash:
 
 ```sh
 curl -sS http://localhost:8000/api/ask -H 'Content-Type: application/json' -d '{"question":"Топ 5 по priority_score","selected_gid":null}'
@@ -223,8 +223,37 @@ curl -sS http://localhost:8000/api/ask -H 'Content-Type: application/json' -d '{
 Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/ask -ContentType 'application/json; charset=utf-8' -Body '{"question":"Топ 5 по priority_score","selected_gid":null}'
 ```
 
-Поддерживаются карточка узла, входящие/исходящие соседи, общие прямые получатели указанных узлов, топ по метрике и направленный путь. Для LLM с OpenAI-совместимым Chat Completions и tool calling задайте **перед запуском сервера** `LLM_BASE_URL` (с префиксом, например `https://api.openai.com/v1`), `LLM_API_KEY` и `LLM_MODEL`.
+Поддерживаются карточка узла, входящие/исходящие соседи, общие прямые получатели указанных узлов, топ по метрике и направленный путь.
+
+Для LLM с OpenAI-совместимым Chat Completions и tool calling задайте переменные **перед запуском сервера** или запишите их в локальный `backend/.env` (исключён из Git); переменные процесса важнее файла:
+
+| Переменная | Значение |
+|---|---|
+| `LLM_PROVIDER` | `openai` (по умолчанию) или `ollama` для локальной модели без ключа |
+| `LLM_BASE_URL` | базовый URL API с префиксом, например `https://api.openai.com/v1`; приложение добавляет `/chat/completions` |
+| `LLM_API_KEY` | ключ внешнего провайдера; для Ollama пустой. В режиме `openai` пустой ключ включает разбор по правилам |
+| `LLM_MODEL` | идентификатор модели у провайдера |
+| `LLM_TIMEOUT_SECONDS` | лимит времени на один вопрос, по умолчанию 30 секунд |
 
 LLM только выбирает функции `get_node`, `neighbors`, `common_collectors`, `top_by`, `path`. Ссылки на gid разрешены только из вопроса, выбранного узла или полученных результатов. Итоговые суммы, связи и карточки строятся серверными шаблонами **из результатов функций**; свободный текст модели в ответ не попадает. При ошибке провайдера срабатывает фолбэк на правилах.
 
 Запрос: `{"question": "...", "selected_gid": null | "<gid>"}`; явные gid в вопросе важнее выделения. Ответ: `answer`, `gids` (строковые идентификаторы упомянутых существующих узлов), `mode` (`llm` или `rules`). Подробный контракт и примеры вопросов — [docs/COPILOT_API.md](docs/COPILOT_API.md).
+
+### Локальная LLM без API-ключа
+
+Установите [Ollama](https://ollama.com/download), затем из корня репозитория:
+
+```sh
+ollama pull qwen3:4b
+ollama create moneygraph-qwen3:4b -f backend/ollama.Modelfile
+```
+
+Скопируйте `backend/.env.example` в `backend/.env`, если локального файла ещё нет, и перезапустите FastAPI. Профиль использует Ollama на `http://127.0.0.1:11434/v1`, API-ключ не нужен. Данные не покидают машину.
+
+Проверить именно LLM, а не фолбэк:
+
+```sh
+python -m backend.check_copilot --all
+```
+
+Команда проверяет пять типов вопросов и завершается ошибкой при `mode="rules"`. Установка, настройки, диагностика — [docs/OLLAMA_SETUP.md](docs/OLLAMA_SETUP.md). Ollama опциональна: без неё ассистент отвечает по правилам, а движок, выгрузки и интерфейс от LLM не зависят.
