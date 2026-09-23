@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ForceGraph2D from 'react-force-graph-2d'
 import { LOCALES } from './i18n'
+import { normalizeGraphPayload } from './graphAdapter'
+import CopilotPanel from './CopilotPanel'
+import LedgerPage from './LedgerPage'
 import './App.css'
 
 const ROLE_COLOR = {
+  boundary: '#7b61a8',
   consolidator: '#e53935',
   coordinator: '#c9a227',
   distributor: '#f0873b',
@@ -18,6 +22,7 @@ const ROLE_ORDER = [
   'distributor',
   'transit',
   'terminal',
+  'boundary',
   'peripheral',
 ]
 
@@ -37,11 +42,6 @@ function formatKzt(n, locale) {
     return locale === 'en' ? `${v}M ₸` : `${v} млн ₸`
   }
   return new Intl.NumberFormat(loc, { maximumFractionDigits: 0 }).format(n) + ' ₸'
-}
-
-function formatPct(n) {
-  const sign = n >= 0 ? '+' : ''
-  return `${sign}${n.toFixed(1)}%`
 }
 
 function linkId(end) {
@@ -401,6 +401,9 @@ export default function App() {
   const [error, setError] = useState('')
   const [query, setQuery] = useState('')
   const [roleFilter, setRoleFilter] = useState('all')
+  const [depthFilter, setDepthFilter] = useState('all')
+  const [seedFilter, setSeedFilter] = useState('all')
+  const [selectedCluster, setSelectedCluster] = useState('')
   const [selectedId, setSelectedId] = useState(null)
   /** Stable tree root — only changes on search / rank / explicit re-root */
   const [treeRootId, setTreeRootId] = useState(null)
@@ -436,11 +439,15 @@ export default function App() {
         return r.json()
       })
       .then((json) => {
-        setData(json)
-        const first = json.top?.[0]?.gid
+        const normalized = normalizeGraphPayload(json)
+        setData(normalized)
+        const first = normalized.top?.[0]?.gid || normalized.nodes?.[0]?.id
         if (first) {
           setSelectedId(first)
           setTreeRootId(first)
+        }
+        if (normalized.clusters?.length) {
+          setSelectedCluster(String(normalized.clusters[0].cluster_id))
         }
       })
       .catch((e) => setError(e.message))
@@ -472,11 +479,10 @@ export default function App() {
   const roleCards = useMemo(() => {
     if (!data) return []
     const total = data.meta.n_nodes || 1
-    return ROLE_ORDER.map((role, idx) => {
+    return ROLE_ORDER.map((role) => {
       const count = data.meta.roles?.[role] || 0
       const share = (count / total) * 100
-      const delta = Number((((share % 7) - 3.2) * (idx % 2 === 0 ? 1 : -1)).toFixed(1))
-      return { role, count, delta }
+      return { role, count, share }
     })
   }, [data])
 
@@ -489,7 +495,20 @@ export default function App() {
     let subgraph
     let root = effectiveRoot
 
-    if (roleFilter !== 'all') {
+    if (mode === 'cluster' && selectedCluster !== '') {
+      const clusterId = Number(selectedCluster)
+      const clusterNodes = data.nodes.filter((node) => node.cluster_id === clusterId)
+      const clusterIds = new Set(clusterNodes.map((node) => node.id))
+      root = clusterIds.has(effectiveRoot)
+        ? effectiveRoot
+        : clusterNodes.slice().sort((a, b) => b.priority_score - a.priority_score)[0]?.id
+      subgraph = {
+        nodes: clusterNodes.map((node) => ({ ...node })),
+        links: data.links.filter(
+          (link) => clusterIds.has(link.source) && clusterIds.has(link.target),
+        ),
+      }
+    } else if (roleFilter !== 'all') {
       const roleGraph = buildRoleGraph(data, roleFilter, effectiveRoot, 48)
       subgraph = roleGraph
       root = roleGraph.rootId
@@ -502,6 +521,25 @@ export default function App() {
       }
     } else {
       subgraph = buildEgoGraph(data, effectiveRoot, 2)
+    }
+
+    if (depthFilter !== 'all' || seedFilter !== 'all') {
+      const visible = new Set(
+        subgraph.nodes
+          .filter(
+            (node) =>
+              (depthFilter === 'all' || node.depth === Number(depthFilter)) &&
+              (seedFilter === 'all' || node.is_seed === (seedFilter === 'seed')),
+          )
+          .map((node) => node.id),
+      )
+      if (root) visible.add(root)
+      subgraph = {
+        nodes: subgraph.nodes.filter((node) => visible.has(node.id)),
+        links: subgraph.links.filter(
+          (link) => visible.has(link.source) && visible.has(link.target),
+        ),
+      }
     }
 
     subgraph = enrichWithExpansions(subgraph, data, expandedIds)
@@ -523,7 +561,16 @@ export default function App() {
       forceChildren,
       counterpartyLookup: (nid) => collectTxCounterparties(data, nid),
     })
-  }, [data, effectiveRoot, roleFilter, mode, expandedIds])
+  }, [
+    data,
+    effectiveRoot,
+    roleFilter,
+    depthFilter,
+    seedFilter,
+    selectedCluster,
+    mode,
+    expandedIds,
+  ])
 
   // Recenter when root / filter / mode changes (not on selection)
   useEffect(() => {
@@ -699,7 +746,11 @@ export default function App() {
     if (hit) {
       setError('')
       setRoleFilter('all')
-      reRootTree(hit.id)
+      if (mode === 'ledger') {
+        setSelectedId(hit.id)
+      } else {
+        reRootTree(hit.id)
+      }
     } else setError(i.notFound(q))
   }
 
@@ -779,6 +830,30 @@ export default function App() {
             >
               {i.navPriority}
             </button>
+            <button
+              type="button"
+              role="tab"
+              className={mode === 'cluster' ? 'active' : ''}
+              onClick={() => {
+                setMode('cluster')
+                setRoleFilter('all')
+                const cluster = data.clusters.find(
+                  (item) => String(item.cluster_id) === String(selectedCluster),
+                )
+                const gid = cluster?.top_gids?.[0]
+                if (gid) reRootTree(String(gid))
+              }}
+            >
+              {i.navClusters}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              className={mode === 'ledger' ? 'active' : ''}
+              onClick={() => setMode('ledger')}
+            >
+              {i.navLedger}
+            </button>
           </div>
           <span className="chip chip-period">{i.period}</span>
           <div className="lang-toggle" role="group" aria-label="Language">
@@ -803,9 +878,75 @@ export default function App() {
         </div>
       </header>
 
+      {mode === 'ledger' ? (
+        <LedgerPage
+          data={data}
+          locale={locale}
+          labels={i.ledger}
+          selectedId={selectedId}
+          onSelect={(id) => setSelectedId(id)}
+          onOpenOnGraph={(id) => {
+            setMode('hunt')
+            setRoleFilter('all')
+            reRootTree(id)
+          }}
+        />
+      ) : (
       <div className="workspace">
         <aside className="side">
           <div className="side-head">{i.sideHead}</div>
+          <div className="graph-filters">
+            <label>
+              <span>{i.depthFilter}</span>
+              <select value={depthFilter} onChange={(e) => setDepthFilter(e.target.value)}>
+                <option value="all">{i.filterAll}</option>
+                {[0, 1, 2, 3, 4].map((depth) => (
+                  <option key={depth} value={depth}>{depth}</option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>{i.seedFilter}</span>
+              <select value={seedFilter} onChange={(e) => setSeedFilter(e.target.value)}>
+                <option value="all">{i.filterAll}</option>
+                <option value="seed">{i.onlySeed}</option>
+                <option value="nonseed">{i.withoutSeed}</option>
+              </select>
+            </label>
+          </div>
+          {mode === 'cluster' && (
+            <div className="cluster-picker">
+              <label htmlFor="cluster-select">{i.clusterSelect}</label>
+              <select
+                id="cluster-select"
+                value={selectedCluster}
+                onChange={(e) => {
+                  const value = e.target.value
+                  setSelectedCluster(value)
+                  const cluster = data.clusters.find(
+                    (item) => String(item.cluster_id) === value,
+                  )
+                  const gid = cluster?.top_gids?.[0]
+                  if (gid) reRootTree(String(gid))
+                }}
+              >
+                {data.clusters.map((cluster) => (
+                  <option key={cluster.cluster_id} value={cluster.cluster_id}>
+                    #{cluster.cluster_id} · {cluster.n_nodes} {i.nodesUnit}
+                  </option>
+                ))}
+              </select>
+              {data.clusters
+                .filter((cluster) => String(cluster.cluster_id) === selectedCluster)
+                .map((cluster) => (
+                  <div className="cluster-summary" key={cluster.cluster_id}>
+                    <b>{i.clusterSummary(cluster.n_nodes, cluster.n_seed)}</b>
+                    <span>{formatKzt(cluster.sum_kzt_internal, locale)}</span>
+                    <p>{cluster.hypothesis}</p>
+                  </div>
+                ))}
+            </div>
+          )}
           <ul className="role-list">
             <li>
               <button
@@ -856,9 +997,7 @@ export default function App() {
                   </div>
                   <div className="role-stats">
                     <b>{c.count}</b>
-                    <span className={`trend ${c.delta >= 0 ? 'up' : 'down'}`}>
-                      {c.delta >= 0 ? '↗' : '↘'} {formatPct(c.delta)}
-                    </span>
+                    <span className="share">{c.share.toFixed(1)}%</span>
                   </div>
                 </button>
               </li>
@@ -993,6 +1132,10 @@ export default function App() {
                   {' · '}
                   {i.cluster} #{selected.cluster_id}
                 </div>
+                <div className="score-row">
+                  <span>{i.roleScore}: <b>{((selected.role_score || 0) * 100).toFixed(0)}%</b></span>
+                  <span>{i.priorityScore}: <b>{((selected.priority_score || 0) * 100).toFixed(0)}%</b></span>
+                </div>
 
                 <div className="money-grid">
                   <div className="money-card in">
@@ -1017,7 +1160,24 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="evidence-box">{selected.evidence}</div>
+                <div className="evidence-box">
+                  <strong>{i.hypothesisLabel}</strong>
+                  <span>{selected.evidence}</span>
+                </div>
+
+                {(selected.flags?.length > 0 || selected.truncated_by_depth) && (
+                  <div className="quality-flags">
+                    <h3>{i.dataQuality}</h3>
+                    {[...new Set([
+                      ...(selected.flags || []),
+                      ...(selected.truncated_by_depth ? ['truncated_by_depth'] : []),
+                    ])].map((flag) => (
+                      <div className="quality-flag" key={flag}>
+                        {i.flagLabels[flag] || flag}
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 <div className="tx-block">
                   <h3>
@@ -1104,42 +1264,51 @@ export default function App() {
                   <th>{i.colRank}</th>
                   <th>{i.colClient}</th>
                   <th>{i.colScore}</th>
-                  <th>{i.colDelta}</th>
+                  <th>{i.colInDeg}</th>
                 </tr>
               </thead>
               <tbody>
-                {data.top.slice(0, 8).map((t) => {
-                  const delta = Number((((t.priority_score * 17) % 5) - 1.5).toFixed(2))
-                  return (
-                    <tr
-                      key={t.gid}
-                      className={t.gid === selectedId ? 'active' : ''}
-                      onClick={() => reRootTree(t.gid)}
-                    >
-                      <td>{t.rank}</td>
-                      <td>
-                        <div className="gid">…{t.gid.slice(-8)}</div>
-                        <span
-                          className="role-pill"
-                          style={{ color: ROLE_COLOR[t.role] }}
-                          title={i.roleTooltips[t.role]}
-                        >
-                          {i.roles[t.role] || t.role}
-                        </span>
-                      </td>
-                      <td>{(t.priority_score * 100).toFixed(0)}</td>
-                      <td className={`trend ${delta >= 0 ? 'up' : 'down'}`}>
-                        {delta >= 0 ? '+' : ''}
-                        {delta}%
-                      </td>
-                    </tr>
-                  )
-                })}
+                {data.top.slice(0, 30).map((t) => (
+                  <tr
+                    key={t.gid}
+                    className={t.gid === selectedId ? 'active' : ''}
+                    onClick={() => reRootTree(t.gid)}
+                  >
+                    <td>{t.rank}</td>
+                    <td>
+                      <div className="gid">…{t.gid.slice(-8)}</div>
+                      <span
+                        className="role-pill"
+                        style={{ color: ROLE_COLOR[t.role] }}
+                        title={i.roleTooltips[t.role]}
+                      >
+                        {i.roles[t.role] || t.role}
+                      </span>
+                    </td>
+                    <td>{(t.priority_score * 100).toFixed(0)}</td>
+                    <td>{t.in_deg ?? '—'}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
         </aside>
       </div>
+      )}
+
+      <CopilotPanel
+        selectedId={selectedId}
+        locale={locale}
+        labels={i.copilot}
+        onOpenGid={(gid) => {
+          setRoleFilter('all')
+          if (mode === 'ledger') {
+            setSelectedId(gid)
+          } else {
+            reRootTree(gid)
+          }
+        }}
+      />
     </div>
   )
 }
