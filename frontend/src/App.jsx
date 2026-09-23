@@ -22,9 +22,12 @@ const ROLE_ORDER = [
 ]
 
 const MAX_DEPTH = 4
+const MAX_DEPTH_EXPANDED = 7
 const MAX_NODES = 80
+const MAX_NODES_EXPANDED = 140
 const LEVEL_GAP = 150
 const SIBLING_GAP = 92
+const EXPAND_LIMIT = 10
 
 function formatKzt(n, locale) {
   if (n == null || Number.isNaN(n)) return '—'
@@ -149,13 +152,66 @@ function buildRoleGraph(data, role, preferredRoot, limit = 48) {
 }
 
 /**
+ * Counterparties of a node from links + transactions, money-volume ranked.
+ * Prefers outgoing (fund flow down the tree), then incoming.
+ */
+function collectTxCounterparties(data, nodeId, limit = EXPAND_LIMIT) {
+  const outSum = new Map()
+  const inSum = new Map()
+
+  for (const l of data.links) {
+    if (l.source === nodeId) {
+      outSum.set(l.target, (outSum.get(l.target) || 0) + (l.sum_kzt || 0))
+    }
+    if (l.target === nodeId) {
+      inSum.set(l.source, (inSum.get(l.source) || 0) + (l.sum_kzt || 0))
+    }
+  }
+
+  for (const t of data.transactions || []) {
+    if (t.src === nodeId) {
+      outSum.set(t.dst, (outSum.get(t.dst) || 0) + (t.sum_kzt || 0))
+    }
+    if (t.dst === nodeId) {
+      inSum.set(t.src, (inSum.get(t.src) || 0) + (t.sum_kzt || 0))
+    }
+  }
+
+  const ranked = []
+  for (const [id, sum] of outSum) ranked.push({ id, sum, pref: 2 })
+  for (const [id, sum] of inSum) {
+    if (!outSum.has(id)) ranked.push({ id, sum, pref: 1 })
+  }
+  ranked.sort((a, b) => b.pref - a.pref || b.sum - a.sum)
+  return ranked.slice(0, limit).map((r) => r.id)
+}
+
+/** Pull transaction counterparties of expanded nodes into the subgraph. */
+function enrichWithExpansions(subgraph, data, expandedIds) {
+  if (!expandedIds?.size) return subgraph
+  const keep = new Set(subgraph.nodes.map((n) => n.id))
+  for (const id of expandedIds) {
+    if (!keep.has(id)) continue
+    for (const nid of collectTxCounterparties(data, id)) keep.add(nid)
+  }
+  return {
+    nodes: data.nodes.filter((n) => keep.has(n.id)).map((n) => ({ ...n })),
+    links: data.links.filter((l) => keep.has(l.source) && keep.has(l.target)),
+  }
+}
+
+/**
  * Hierarchical tree — real nodes only (no collapsed / synthetic nodes).
+ * When forceChildren is set, those nodes are attached under the given parent
+ * even if BFS would have skipped them (used for expand-on-click).
  */
 function layoutTreeGraph(subgraph, rootId, opts = {}) {
   const maxDepth = opts.maxDepth ?? MAX_DEPTH
   const levelGap = opts.levelGap ?? LEVEL_GAP
   const siblingGap = opts.siblingGap ?? SIBLING_GAP
   const maxNodes = opts.maxNodes ?? MAX_NODES
+  /** Map parentId -> childId[] forced under expanded clicks */
+  const forceChildren = opts.forceChildren || new Map()
 
   if (!subgraph.nodes.length) return { nodes: [], links: [], rootId }
 
@@ -178,6 +234,13 @@ function layoutTreeGraph(subgraph, rootId, opts = {}) {
   const rankNeighbors = (u) => {
     const seen = new Set()
     const ranked = []
+    // Forced children first (expanded transaction branch)
+    for (const cid of forceChildren.get(u) || []) {
+      if (!visited.has(cid) && nodeMap.has(cid) && !seen.has(cid)) {
+        seen.add(cid)
+        ranked.push({ id: cid, sum_kzt: 1e12, _pref: 3 })
+      }
+    }
     for (const n of out.get(u) || []) {
       if (!visited.has(n.id) && nodeMap.has(n.id) && !seen.has(n.id)) {
         seen.add(n.id)
@@ -217,7 +280,24 @@ function layoutTreeGraph(subgraph, rootId, opts = {}) {
     }
   }
 
-  // Drop unreachable nodes — only BFS tree members
+  // Attach forced children that BFS missed (e.g. already visited elsewhere):
+  // only add if not already in tree under another parent — skip duplicates.
+  for (const [parent, kids] of forceChildren) {
+    if (!depthOf.has(parent)) continue
+    const depth = depthOf.get(parent)
+    if (depth >= maxDepth) continue
+    if (!childrenOf.has(parent)) childrenOf.set(parent, [])
+    for (const cid of kids) {
+      if (!nodeMap.has(cid)) continue
+      if (depthOf.has(cid)) continue
+      if (visited.size >= maxNodes) break
+      visited.add(cid)
+      parentOf.set(cid, parent)
+      depthOf.set(cid, depth + 1)
+      childrenOf.get(parent).push(cid)
+    }
+  }
+
   for (const id of [...nodeMap.keys()]) {
     if (!depthOf.has(id)) nodeMap.delete(id)
   }
@@ -266,7 +346,14 @@ function layoutTreeGraph(subgraph, rootId, opts = {}) {
     n.y = y
     n._treeDepth = depth
     n._isRoot = id === rootId
+    n._parentId = parentOf.get(id) ?? null
     positioned.push(n)
+  }
+
+  // Mark which nodes still have hidden tx counterparties
+  for (const n of positioned) {
+    const cps = opts.counterpartyLookup?.(n.id) || []
+    n._hasMoreTx = cps.some((cid) => !depthOf.has(cid))
   }
 
   const moneyByPair = new Map()
@@ -317,6 +404,8 @@ export default function App() {
   const [selectedId, setSelectedId] = useState(null)
   /** Stable tree root — only changes on search / rank / explicit re-root */
   const [treeRootId, setTreeRootId] = useState(null)
+  /** Nodes whose transaction counterparties are pulled into the tree */
+  const [expandedIds, setExpandedIds] = useState(() => new Set())
   const [mode, setMode] = useState('network')
   const [graphSize, setGraphSize] = useState({ width: 0, height: 0 })
   const [locale, setLocale] = useState(() => {
@@ -329,6 +418,7 @@ export default function App() {
   const fgRef = useRef()
   const graphHostRef = useRef(null)
   const cameraKeyRef = useRef('')
+  const pendingPanRef = useRef(null)
   const i = LOCALES[locale]
 
   useEffect(() => {
@@ -414,36 +504,66 @@ export default function App() {
       subgraph = buildEgoGraph(data, effectiveRoot, 2)
     }
 
+    subgraph = enrichWithExpansions(subgraph, data, expandedIds)
+
+    const forceChildren = new Map()
+    for (const id of expandedIds) {
+      const kids = collectTxCounterparties(data, id).filter((cid) =>
+        subgraph.nodes.some((n) => n.id === cid),
+      )
+      if (kids.length) forceChildren.set(id, kids)
+    }
+
+    const hasExpand = expandedIds.size > 0
     return layoutTreeGraph(subgraph, root, {
-      maxDepth: MAX_DEPTH,
-      maxNodes: MAX_NODES,
+      maxDepth: hasExpand ? MAX_DEPTH_EXPANDED : MAX_DEPTH,
+      maxNodes: hasExpand ? MAX_NODES_EXPANDED : MAX_NODES,
       levelGap: LEVEL_GAP,
       siblingGap: SIBLING_GAP,
+      forceChildren,
+      counterpartyLookup: (nid) => collectTxCounterparties(data, nid),
     })
-  }, [data, effectiveRoot, roleFilter, mode])
+  }, [data, effectiveRoot, roleFilter, mode, expandedIds])
 
-  // Recenter only when tree structure changes (root / filter / mode), not on node select
+  // Recenter when root / filter / mode changes (not on selection)
   useEffect(() => {
     const fg = fgRef.current
     if (!fg || !graphSize.width || !graphSize.height) return
     if (!graphData.nodes.length) return
 
-    const key = `${graphData.rootId}|${roleFilter}|${mode}|${graphData.nodes.length}`
-    if (cameraKeyRef.current === key) return
-    cameraKeyRef.current = key
-
-    const root = graphData.nodes.find((n) => n._isRoot) || graphData.nodes[0]
-    const t = setTimeout(() => {
-      const maxDepth = Math.max(...graphData.nodes.map((n) => n._treeDepth || 0), 1)
-      const zoom = Math.min(
-        1.25,
-        Math.max(0.45, (graphSize.height * 0.8) / ((maxDepth + 1.2) * LEVEL_GAP)),
-      )
-      fg.centerAt(root.fx ?? 0, (root.fy ?? 0) + maxDepth * LEVEL_GAP * 0.32, 400)
-      fg.zoom(zoom, 400)
-    }, 60)
-    return () => clearTimeout(t)
+    const key = `${graphData.rootId}|${roleFilter}|${mode}`
+    if (cameraKeyRef.current !== key) {
+      cameraKeyRef.current = key
+      const root = graphData.nodes.find((n) => n._isRoot) || graphData.nodes[0]
+      const t = setTimeout(() => {
+        const maxDepth = Math.max(...graphData.nodes.map((n) => n._treeDepth || 0), 1)
+        const zoom = Math.min(
+          1.25,
+          Math.max(0.45, (graphSize.height * 0.8) / ((maxDepth + 1.2) * LEVEL_GAP)),
+        )
+        fg.centerAt(root.fx ?? 0, (root.fy ?? 0) + maxDepth * LEVEL_GAP * 0.32, 400)
+        fg.zoom(zoom, 400)
+      }, 60)
+      return () => clearTimeout(t)
+    }
   }, [graphData, graphSize.width, graphSize.height, roleFilter, mode])
+
+  // After expand: pan down to show new branch while keeping root in frame
+  useEffect(() => {
+    const targetId = pendingPanRef.current
+    if (!targetId || !graphData.nodes.length) return
+    pendingPanRef.current = null
+    const fg = fgRef.current
+    if (!fg) return
+    const node = graphData.nodes.find((n) => n.id === targetId)
+    const root = graphData.nodes.find((n) => n._isRoot)
+    const child =
+      graphData.nodes.find((n) => n._parentId === targetId) || node
+    const t = setTimeout(() => {
+      if (child) ensureVisible(fg, child, root, graphSize.height)
+    }, 80)
+    return () => clearTimeout(t)
+  }, [graphData, graphSize.height])
 
   const neighbors = useMemo(() => {
     if (!data || !selectedId) return { in: [], out: [] }
@@ -482,10 +602,23 @@ export default function App() {
       .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
   }, [data, selectedId])
 
-  /** Select node without rebuilding the tree */
+  /** Select in card / list — also expand tx branch if node is already on the tree */
   const selectNode = useCallback(
-    (id, { pan = true } = {}) => {
+    (id, { pan = true, expand = false } = {}) => {
       setSelectedId(id)
+      if (expand && data) {
+        const cps = collectTxCounterparties(data, id)
+        if (cps.length) {
+          pendingPanRef.current = id
+          setExpandedIds((prev) => {
+            if (prev.has(id)) return prev
+            const next = new Set(prev)
+            next.add(id)
+            return next
+          })
+          return
+        }
+      }
       if (!pan) return
       requestAnimationFrame(() => {
         const fg = fgRef.current
@@ -496,31 +629,51 @@ export default function App() {
         if (node) ensureVisible(fg, node, root, graphSize.height)
       })
     },
-    [graphSize.height],
+    [data, graphSize.height],
   )
 
   /** Re-root the tree (search / ranking / explicit) */
   const reRootTree = useCallback((id) => {
     setTreeRootId(id)
     setSelectedId(id)
+    setExpandedIds(new Set())
     setMode('hunt')
     cameraKeyRef.current = ''
   }, [])
 
   const onNodeClick = useCallback(
     (node) => {
-      // Keep tree structure — only update selection + gentle pan
-      selectNode(node.id, { pan: true })
+      setSelectedId(node.id)
+      // Expand transaction counterparties under this node (keep root/tree)
+      const cps = data ? collectTxCounterparties(data, node.id) : []
+      if (cps.length) {
+        pendingPanRef.current = node.id
+        setExpandedIds((prev) => {
+          if (prev.has(node.id)) return prev
+          const next = new Set(prev)
+          next.add(node.id)
+          return next
+        })
+      } else {
+        requestAnimationFrame(() => {
+          const fg = fgRef.current
+          if (!fg) return
+          const nodes = fg.graphData()?.nodes || []
+          const n = nodes.find((x) => x.id === node.id)
+          const root = nodes.find((x) => x._isRoot)
+          if (n) ensureVisible(fg, n, root, graphSize.height)
+        })
+      }
     },
-    [selectNode],
+    [data, graphSize.height],
   )
 
   const onRoleFilter = useCallback(
     (role) => {
       setRoleFilter(role)
+      setExpandedIds(new Set())
       cameraKeyRef.current = ''
       if (role === 'all') return
-      // Keep current selection if it matches the role; else pick top of role
       if (!data) return
       const current = data.nodes.find((n) => n.id === selectedId)
       if (current?.role === role) return
@@ -596,6 +749,7 @@ export default function App() {
               onClick={() => {
                 setMode('network')
                 setRoleFilter('all')
+                setExpandedIds(new Set())
                 cameraKeyRef.current = ''
               }}
             >
@@ -794,6 +948,25 @@ export default function App() {
                     ctx.font = `${(isSelected || isRoot ? 12 : 10) / globalScale}px Montserrat`
                     ctx.fillStyle = '#0e151c'
                     ctx.fillText(String(node.id).slice(-6), node.x + r + 3, node.y + 3)
+                  }
+                  // Hint: node has transaction counterparties not yet shown
+                  if (node._hasMoreTx && !isRoot) {
+                    const br = 5.5 / Math.max(globalScale, 0.7)
+                    ctx.beginPath()
+                    ctx.arc(node.x + r * 0.65, node.y - r * 0.65, br, 0, 2 * Math.PI)
+                    ctx.fillStyle = '#fff'
+                    ctx.fill()
+                    ctx.strokeStyle = 'var(--ff-green)'
+                    ctx.strokeStyle = '#02b140'
+                    ctx.lineWidth = 1.2 / globalScale
+                    ctx.stroke()
+                    ctx.font = `bold ${9 / globalScale}px Montserrat`
+                    ctx.fillStyle = '#02b140'
+                    ctx.textAlign = 'center'
+                    ctx.textBaseline = 'middle'
+                    ctx.fillText('+', node.x + r * 0.65, node.y - r * 0.65 + 0.5)
+                    ctx.textAlign = 'left'
+                    ctx.textBaseline = 'alphabetic'
                   }
                 }}
                 onNodeClick={onNodeClick}
