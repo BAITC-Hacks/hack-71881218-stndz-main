@@ -4,6 +4,7 @@
 """
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,6 +31,11 @@ class GraphStore:
             if path is None:
                 raise FileNotFoundError("graph.json не найден — запустите python pipeline.py")
         raw = json.loads(path.read_text(encoding="utf-8"))
+        gids = [node["id"] for node in raw["nodes"]]
+        if any(not isinstance(gid, str) or not re.fullmatch(r"[0-9]{18}", gid) for gid in gids):
+            raise ValueError("graph.json: id должен быть строкой из 18 цифр")
+        if len(set(gids)) != len(gids):
+            raise ValueError("graph.json: повторяющиеся id")
         store = cls(
             source=path,
             meta=raw["meta"],
@@ -38,7 +44,14 @@ class GraphStore:
             top=raw.get("top", []),
             clusters=raw.get("clusters", []),
         )
+        pairs = set()
         for link in store.links:
+            if link["source"] not in store.nodes or link["target"] not in store.nodes:
+                raise ValueError("graph.json: связь с неизвестным или нестроковым id")
+            pair = (link["source"], link["target"])
+            if pair in pairs:
+                raise ValueError("graph.json: связи должны быть агрегированы по source/target")
+            pairs.add(pair)
             store.out_links.setdefault(link["source"], []).append(link)
             store.in_links.setdefault(link["target"], []).append(link)
         return store
