@@ -145,7 +145,11 @@ def test_exports_reject_symlinks_outside_snapshot_directory(client, snapshot, tm
     outside = tmp_path / "other" / "unrelated.csv"
     outside.parent.mkdir()
     outside.write_text("not a snapshot export", encoding="utf-8")
-    (snapshot[0].parent / "top_nodes.csv").symlink_to(outside)
+    try:
+        (snapshot[0].parent / "top_nodes.csv").symlink_to(outside)
+    except OSError:
+        # Windows без прав администратора / режима разработчика не создаёт symlink
+        pytest.skip("ОС не разрешает создавать символические ссылки")
     assert api.get("/api/exports/top_nodes.csv").status_code == 404
 
 
