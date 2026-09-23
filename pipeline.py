@@ -500,6 +500,7 @@ def export_frontend(
     df: pd.DataFrame,
     clusters: pd.DataFrame,
     edges: pd.DataFrame,
+    tx: pd.DataFrame,
     out_dir: Path,
     frontend_dir: Path,
 ):
@@ -507,7 +508,6 @@ def export_frontend(
     public = frontend_dir / "public" / "data"
     public.mkdir(parents=True, exist_ok=True)
 
-    # CSV для жюри / скачивания из UI
     for name in ("nodes_roles.csv", "clusters.csv", "top_nodes.csv"):
         src = out_dir / name
         if src.exists():
@@ -530,6 +530,8 @@ def export_frontend(
             "out_deg": int(r.out_deg),
             "is_seed": bool(r.is_seed),
             "cluster_id": int(r.cluster_id),
+            "in_kzt": float(r.in_kzt),
+            "out_kzt": float(r.out_kzt),
         }
         for i, r in enumerate(top.itertuples(index=False), start=1)
     ]
@@ -577,23 +579,55 @@ def export_frontend(
         for r in clusters.itertuples(index=False)
     ]
 
+    daily = (
+        tx.groupby(tx["date"].dt.strftime("%Y-%m-%d"))
+        .agg(sum_kzt=("sum_kzt", "sum"), n_tx=("sum_kzt", "size"))
+        .reset_index()
+        .rename(columns={"date": "day"})
+    )
+    timeseries = [
+        {"day": row.day, "sum_kzt": float(row.sum_kzt), "n_tx": int(row.n_tx)}
+        for row in daily.itertuples(index=False)
+    ]
+
+    # полная история переводов для UI (дата / сумма / контрагент)
+    tx_sorted = tx.sort_values("date")
+    transactions_payload = [
+        {
+            "src": str(int(r.src)),
+            "dst": str(int(r.dst)),
+            "date": r.date.strftime("%Y-%m-%d"),
+            "sum_kzt": float(r.sum_kzt),
+        }
+        for r in tx_sorted.itertuples(index=False)
+    ]
+
     payload = {
         "meta": {
             "n_nodes": len(nodes_payload),
             "n_edges": len(links_payload),
             "n_clusters": len(clusters_payload),
+            "n_tx": len(transactions_payload),
+            "n_seed": int(df.is_seed.sum()),
+            "sum_kzt": float(edges.sum_kzt.sum()),
+            "period": {
+                "start": str(tx.date.min().date()),
+                "end": str(tx.date.max().date()),
+            },
             "roles": df.role.value_counts().to_dict(),
+            "brand": "Freedom Finance",
         },
         "nodes": nodes_payload,
         "links": links_payload,
         "top": top_payload,
         "clusters": clusters_payload,
+        "timeseries": timeseries,
+        "transactions": transactions_payload,
     }
     path = public / "graph.json"
     path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    # копия в out/
     (out_dir / "graph.json").write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
-    print(f"Frontend data → {path}")
+    print(f"Frontend data → {path} (tx={len(transactions_payload)})")
 
 
 def main():
@@ -621,7 +655,7 @@ def main():
 
     clusters = build_cluster_table(df, edges)
     write_outputs(df, clusters, out_dir)
-    export_frontend(df, clusters, edges, out_dir, Path(a.frontend))
+    export_frontend(df, clusters, edges, tx, out_dir, Path(a.frontend))
 
     if not a.no_viz:
         print("Визуализация (pyvis)…")

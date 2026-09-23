@@ -1,18 +1,29 @@
 :root {
-  --bg: #0c1210;
-  --panel: #141c18;
-  --panel-2: #1a2420;
-  --line: #2a3a32;
-  --text: #e8efe9;
-  --muted: #8fa396;
-  --accent: #3d9b6e;
-  --consolidator: #d64545;
-  --coordinator: #c4a35a;
-  --distributor: #d97b3d;
-  --transit: #3d7ea6;
-  --terminal: #3d9b6e;
-  --peripheral: #6b7a72;
-  font-family: "IBM Plex Sans", system-ui, sans-serif;
+  /* Freedom Bank Kazakhstan — bankffin.kz */
+  --ff-green: #02b140;
+  --ff-green-dark: #164734;
+  --ff-green-soft: rgba(2, 177, 64, 0.1);
+  --ff-blue: #4aa3e8;
+  --ff-blue-soft: #e8f4fc;
+
+  --bg: #f5f7fa;
+  --bg-elev: #ffffff;
+  --panel: #ffffff;
+  --panel-2: #f0f3f7;
+  --line: #e4e8ee;
+  --text: #0e151c;
+  --muted: #6b7585;
+  --danger: #e53935;
+  --warn: #f5a623;
+
+  --consolidator: #e53935;
+  --coordinator: #c9a227;
+  --distributor: #f0873b;
+  --transit: #4aa3e8;
+  --terminal: #02b140;
+  --peripheral: #8a94a3;
+
+  font-family: Montserrat, sans-serif;
   color: var(--text);
   background: var(--bg);
   line-height: 1.45;
@@ -30,16 +41,14 @@ body,
 }
 
 body {
-  background:
-    radial-gradient(ellipse 80% 50% at 10% -10%, #1a3028 0%, transparent 55%),
-    radial-gradient(ellipse 60% 40% at 100% 0%, #1c2418 0%, transparent 50%),
-    var(--bg);
+  background: var(--bg);
 }
 
 button,
 input,
 select {
   font: inherit;
+  color: inherit;
 }
 
 button {
