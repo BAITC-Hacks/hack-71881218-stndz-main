@@ -6,9 +6,10 @@
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 
 from backend.copilot import AskRequest, AskResponse, Copilot, LLMSettings
+from backend.insights import node_card, resilience
 from backend.store import ROOT, GraphStore
 
 
@@ -39,3 +40,16 @@ async def ask(request: AskRequest):
     if request.selected_gid is not None and request.selected_gid not in app.state.store.nodes:
         raise HTTPException(status_code=404, detail="Выбранный узел не найден в выгрузке.")
     return await app.state.copilot.ask(request.question, request.selected_gid)
+
+
+@app.get("/api/nodes/{gid}/card")
+def card(gid: str):
+    try:
+        return node_card(app.state.store, gid)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Узел не найден в выгрузке.") from None
+
+
+@app.get("/api/resilience")
+def network_resilience(n: int = Query(10, ge=1, le=100)):
+    return resilience(app.state.store, n)
