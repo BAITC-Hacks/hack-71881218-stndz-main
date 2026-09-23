@@ -1,5 +1,7 @@
 """Date-aware transaction features for short-window flow analysis."""
 
+from math import fsum
+
 import numpy as np
 import pandas as pd
 
@@ -71,8 +73,8 @@ def add_temporal_features(
     fast_share_by_gid = {}
     for gid, outgoing_rows in transaction_rows.groupby("src", sort=True):
         recent_incoming_dates = incoming_dates.get(int(gid), ())
-        matched_outgoing_amount = config.ZERO_FLOAT
-        total_outgoing_amount = float(outgoing_rows["sum_kzt"].sum())
+        matched_outgoing_amounts = []
+        total_outgoing_amount = fsum(outgoing_rows["sum_kzt"])
         for transfer in outgoing_rows.itertuples(index=False):
             transfer_date = pd.Timestamp(transfer.date)
             window_start = transfer_date - observation_window
@@ -80,9 +82,9 @@ def add_temporal_features(
                 window_start <= incoming_date <= transfer_date
                 for incoming_date in recent_incoming_dates
             ):
-                matched_outgoing_amount += float(transfer.sum_kzt)
+                matched_outgoing_amounts.append(float(transfer.sum_kzt))
         fast_share_by_gid[int(gid)] = (
-            matched_outgoing_amount / total_outgoing_amount
+            fsum(matched_outgoing_amounts) / total_outgoing_amount
             if total_outgoing_amount > config.ZERO_FLOAT
             else np.nan
         )

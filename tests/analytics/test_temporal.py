@@ -56,3 +56,20 @@ def test_temporal_features_handle_empty_history_and_unknown_gids() -> None:
     )
     with pytest.raises(ValueError, match="gids missing from features"):
         add_temporal_features(features, unknown_transactions)
+
+
+def test_fast_share_preserves_unit_range_for_fractional_amounts() -> None:
+    features = pd.DataFrame({"gid": [1, 2, 3]})
+    transactions = pd.DataFrame(
+        [(1, 2, "2026-07-01", 5000.1)]
+        + [(2, 3, "2026-07-02", 5000.1)] * 24,
+        columns=config.TRANSACTION_COLUMNS,
+    )
+
+    result = add_temporal_features(features, transactions).set_index("gid")
+
+    assert result.loc[2, "fast_share"] == config.ONE_FLOAT
+    reordered = add_temporal_features(
+        features, transactions.sample(frac=1, random_state=42)
+    ).set_index("gid")
+    pd.testing.assert_frame_equal(result, reordered, check_exact=True)

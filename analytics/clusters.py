@@ -37,8 +37,17 @@ def assign_communities(
     if node_gids != set(graph.nodes):
         raise ValueError("Cluster node table and graph must contain the same gids")
 
+    projection = nx.Graph()
+    projection.add_nodes_from(sorted(graph.nodes))
+    for source, target, attributes in sorted(graph.edges(data=True)):
+        weight = float(attributes["sum_kzt"])
+        if projection.has_edge(source, target):
+            projection[source][target]["sum_kzt"] += weight
+        else:
+            projection.add_edge(source, target, sum_kzt=weight)
+
     communities = nx.community.louvain_communities(
-        graph.to_undirected(),
+        projection,
         weight="sum_kzt",
         seed=config.LOUVAIN_SEED,
     )
@@ -58,7 +67,9 @@ def assign_communities(
     result["cluster_id"] = result["gid"].map(cluster_by_gid).astype("int64")
     result = result.sort_values("gid", kind="mergesort").reset_index(drop=True)
 
-    edge_clusters = edges.loc[:, CLUSTER_EDGE_COLUMNS].copy()
+    edge_clusters = edges.loc[:, CLUSTER_EDGE_COLUMNS].sort_values(
+        ["src", "dst"], kind="mergesort"
+    ).copy()
     edge_clusters["src_cluster"] = edge_clusters["src"].map(cluster_by_gid)
     edge_clusters["dst_cluster"] = edge_clusters["dst"].map(cluster_by_gid)
     if edge_clusters[["src_cluster", "dst_cluster"]].isna().any().any():

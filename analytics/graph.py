@@ -22,8 +22,8 @@ class GraphContext:
 def build_graph(nodes: pd.DataFrame, edges: pd.DataFrame) -> GraphContext:
     """Build a directed weighted graph while preserving every listed node."""
     graph = nx.DiGraph()
-    graph.add_nodes_from(nodes["gid"].astype("int64").tolist())
-    for row in edges.itertuples(index=False):
+    graph.add_nodes_from(sorted(nodes["gid"].astype("int64")))
+    for row in edges.sort_values(["src", "dst"], kind="mergesort").itertuples(index=False):
         graph.add_edge(
             int(row.src),
             int(row.dst),

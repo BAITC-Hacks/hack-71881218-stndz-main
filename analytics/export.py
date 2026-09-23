@@ -2,6 +2,7 @@
 
 import json
 from datetime import datetime, timezone
+from math import fsum
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +73,10 @@ def build_graph_payload(
     """Build a contract-shaped graph payload from the same rows as the CSV."""
     if context.graph.number_of_nodes() != len(nodes_roles) or context.graph.number_of_edges() != len(edges):
         raise ValueError("Graph and export tables do not describe the same input data")
+    if nodes_roles["gid"].isna().any() or nodes_roles["gid"].duplicated().any():
+        raise ValueError("Node export must contain unique, non-null gids")
+    if set(nodes_roles["gid"]) != set(context.graph.nodes):
+        raise ValueError("Node export and graph must contain the same gids")
 
     role_rows = _feature_lookup(nodes_roles)
     if set(nodes_roles["cluster_id"]) != set(clusters["cluster_id"]):
@@ -178,7 +183,7 @@ def build_graph_payload(
             "edges": len(edges),
             "tx": len(transactions),
             "seeds": int(nodes_roles["is_seed"].sum()),
-            "total_kzt": float(edges["sum_kzt"].sum()),
+            "total_kzt": fsum(edges["sum_kzt"]),
             "clusters": len(json_clusters),
             "generated_at": datetime.now(timezone.utc).replace(microsecond=config.ZERO).isoformat(),
         },

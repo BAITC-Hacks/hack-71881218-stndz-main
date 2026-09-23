@@ -172,3 +172,61 @@ def test_graph_json_exports_cluster_contract(graph_artifacts) -> None:
         assert len(cluster["top_gids"]) <= config.CLUSTER_TOP_GID_COUNT
         assert sum(cluster["role_mix"].values()) == cluster["n_nodes"]
         assert any(character.isdigit() for character in cluster["hypothesis"])
+
+
+def test_louvain_projection_preserves_reciprocal_flow_and_isolates(
+    graph_artifacts, monkeypatch
+) -> None:
+    nodes_roles, _, _, edges, _, context = graph_artifacts
+    louvain = nx.community.louvain_communities
+
+    def checked_louvain(projection, **kwargs):
+        assert not projection.is_directed()
+        assert set(projection) == set(context.graph)
+        assert projection.size(weight="sum_kzt") == pytest.approx(
+            edges["sum_kzt"].sum(), rel=config.EDGE_SUM_REL_TOLERANCE
+        )
+        for source, target, attributes in projection.edges(data=True):
+            expected = context.graph.get_edge_data(source, target, {}).get(
+                "sum_kzt", config.ZERO_FLOAT
+            ) + context.graph.get_edge_data(target, source, {}).get(
+                "sum_kzt", config.ZERO_FLOAT
+            )
+            assert attributes["sum_kzt"] == expected
+        return louvain(projection, **kwargs)
+
+    monkeypatch.setattr(nx.community, "louvain_communities", checked_louvain)
+    assign_communities(nodes_roles, edges, context.graph)
+
+
+def test_communities_ignore_graph_insertion_order(graph_artifacts) -> None:
+    nodes_roles, clusters, _, edges, _, context = graph_artifacts
+    reordered_graph = nx.DiGraph()
+    reordered_graph.add_nodes_from(reversed(list(context.graph.nodes)))
+    reordered_graph.add_edges_from(reversed(list(context.graph.edges(data=True))))
+
+    reordered_nodes, reordered_clusters = assign_communities(
+        nodes_roles.sample(frac=1, random_state=42),
+        edges.sample(frac=1, random_state=42),
+        reordered_graph,
+    )
+
+    pd.testing.assert_frame_equal(nodes_roles, reordered_nodes, check_exact=True)
+    pd.testing.assert_frame_equal(clusters, reordered_clusters, check_exact=True)
+
+
+@pytest.mark.parametrize("corruption", ["duplicate", "foreign"])
+def test_export_rejects_wrong_node_identity(graph_artifacts, corruption) -> None:
+    nodes_roles, clusters, top_nodes, edges, transactions, context = graph_artifacts
+    corrupted = nodes_roles.copy()
+    candidates = corrupted.index[~corrupted["gid"].isin(top_nodes["gid"])]
+    corrupted.loc[candidates[0], "gid"] = (
+        corrupted.loc[candidates[1], "gid"]
+        if corruption == "duplicate"
+        else int(corrupted["gid"].max()) + 1
+    )
+
+    with pytest.raises(ValueError, match="unique, non-null gids|same gids"):
+        build_graph_payload(
+            corrupted, clusters, top_nodes, edges, transactions, context
+        )
