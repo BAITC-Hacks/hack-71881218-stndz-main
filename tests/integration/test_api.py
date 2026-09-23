@@ -146,6 +146,20 @@ def test_store_rejects_ambiguous_graph_identity(graph, corruption):
         GraphStore.load(store.source)
 
 
+def test_store_env_selects_graph_json(graph, monkeypatch):
+    store, ids = graph
+    monkeypatch.setenv("MONEYGRAPH_GRAPH_JSON", str(store.source))
+    loaded = GraphStore.load()
+    assert loaded.source == store.source
+    assert set(loaded.nodes) == set(ids.values())
+
+
+def test_store_env_missing_file_fails_loudly(tmp_path, monkeypatch):
+    monkeypatch.setenv("MONEYGRAPH_GRAPH_JSON", str(tmp_path / "missing.json"))
+    with pytest.raises(FileNotFoundError, match="MONEYGRAPH_GRAPH_JSON"):
+        GraphStore.load()
+
+
 @pytest.fixture
 def api(graph, monkeypatch):
     store, ids = graph

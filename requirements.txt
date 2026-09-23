@@ -1,7 +1,7 @@
 # Граф денег — HackAlem AI
 pandas>=2.0
 pyarrow>=14.0
-networkx>=3.1
+networkx==3.7  # точная версия: Louvain(seed=42) воспроизводим только в пределах версии (D-005); требует Python 3.12+
 numpy>=1.24
 scipy>=1.10
 pyvis>=0.3

@@ -8,3 +8,4 @@ node_modules/
 frontend/dist/
 frontend/node_modules/
 lib/
+.claude/settings.local.json

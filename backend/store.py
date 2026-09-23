@@ -4,13 +4,19 @@
 """
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-# out/ — основная выгрузка пайплайна; копия во frontend — запасной вариант
-CANDIDATES = [ROOT / "out" / "graph.json", ROOT / "frontend" / "public" / "data" / "graph.json"]
+# Порядок поиска: out/ (pipeline.py) → копия во frontend → output/ (run_pipeline.py участника 1).
+# MONEYGRAPH_GRAPH_JSON задаёт файл явно — так переключаемся на движок участника 1.
+CANDIDATES = [
+    ROOT / "out" / "graph.json",
+    ROOT / "frontend" / "public" / "data" / "graph.json",
+    ROOT / "output" / "graph.json",
+]
 
 
 @dataclass
@@ -26,6 +32,10 @@ class GraphStore:
 
     @classmethod
     def load(cls, path: Path | None = None) -> "GraphStore":
+        if path is None and os.environ.get("MONEYGRAPH_GRAPH_JSON"):
+            path = Path(os.environ["MONEYGRAPH_GRAPH_JSON"])
+            if not path.is_file():
+                raise FileNotFoundError(f"MONEYGRAPH_GRAPH_JSON указывает на несуществующий файл: {path}")
         if path is None:
             path = next((p for p in CANDIDATES if p.is_file()), None)
             if path is None:

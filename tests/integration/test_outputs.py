@@ -2,8 +2,13 @@
 
 Пайплайн запускается во временную папку, данные фронта не трогаются.
 Запуск: python -m pytest tests/integration -v
+
+Какой пайплайн проверять, задаёт переменная MONEYGRAPH_PIPELINE:
+  legacy (по умолчанию) — pipeline.py
+  engine                — run_pipeline.py + analytics/ (участник 1)
 """
 
+import os
 import subprocess
 import sys
 import time
@@ -22,13 +27,22 @@ ALLOWED_ROLES = {
 }
 MAX_SECONDS = 300
 
+PIPELINE = os.environ.get("MONEYGRAPH_PIPELINE", "legacy")
+COMMANDS = {
+    "legacy": lambda dest: [
+        str(ROOT / "pipeline.py"), "--data", str(DATA), "--out", str(dest / "out"),
+        "--frontend", str(dest / "frontend"), "--no-viz"],
+    "engine": lambda dest: [
+        str(ROOT / "run_pipeline.py"), "--data-dir", str(DATA), "--output-dir", str(dest / "out")],
+}
+if PIPELINE not in COMMANDS:
+    raise ValueError(f"MONEYGRAPH_PIPELINE={PIPELINE!r}, ожидается одно из {sorted(COMMANDS)}")
+
 
 def run_pipeline(dest: Path) -> float:
     start = time.monotonic()
     subprocess.run(
-        [sys.executable, str(ROOT / "pipeline.py"),
-         "--data", str(DATA), "--out", str(dest / "out"),
-         "--frontend", str(dest / "frontend"), "--no-viz"],
+        [sys.executable, *COMMANDS[PIPELINE](dest)],
         cwd=ROOT, check=True, capture_output=True,
     )
     return time.monotonic() - start
@@ -102,8 +116,9 @@ def test_nodes_roles_columns_filled(roles):
 
 
 def test_roles_from_dictionary(roles):
-    unknown = set(roles.role) - ALLOWED_ROLES
-    assert not unknown, f"роли вне словаря: {unknown}"
+    bad = roles[~roles.role.isin(ALLOWED_ROLES)]
+    found = bad.role.fillna("<пусто>").value_counts().to_dict()
+    assert bad.empty, f"{len(bad)} узлов с ролью вне словаря: {found}"
 
 
 def test_scores_in_unit_range(roles):
