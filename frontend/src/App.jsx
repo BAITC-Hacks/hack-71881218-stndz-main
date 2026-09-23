@@ -21,9 +21,10 @@ const ROLE_ORDER = [
   'peripheral',
 ]
 
-const MAX_CHILDREN = 6
-const LEVEL_GAP = 110
-const SIBLING_GAP = 72
+const MAX_DEPTH = 4
+const MAX_NODES = 80
+const LEVEL_GAP = 150
+const SIBLING_GAP = 92
 
 function formatKzt(n, locale) {
   if (n == null || Number.isNaN(n)) return '—'
@@ -44,6 +45,30 @@ function linkId(end) {
   return typeof end === 'object' ? end.id : end
 }
 
+function buildAdjMaps(links) {
+  const undirected = new Map()
+  const out = new Map()
+  const inn = new Map()
+  const push = (map, a, b, sum) => {
+    if (!map.has(a)) map.set(a, [])
+    map.get(a).push({ id: b, sum_kzt: sum || 0 })
+  }
+  for (const l of links) {
+    const s = linkId(l.source)
+    const t = linkId(l.target)
+    const sum = l.sum_kzt || 0
+    push(undirected, s, t, sum)
+    push(undirected, t, s, sum)
+    push(out, s, t, sum)
+    push(inn, t, s, sum)
+  }
+  for (const map of [undirected, out, inn]) {
+    for (const list of map.values()) list.sort((a, b) => b.sum_kzt - a.sum_kzt)
+  }
+  return { undirected, out, inn }
+}
+
+/** Ego neighborhood around a center (real nodes only). */
 function buildEgoGraph(data, centerId, hop = 2) {
   const nodeMap = new Map(data.nodes.map((n) => [n.id, n]))
   if (!nodeMap.has(centerId)) return { nodes: [], links: [] }
@@ -55,11 +80,11 @@ function buildEgoGraph(data, centerId, hop = 2) {
     for (const link of data.links) {
       const s = link.source
       const t = link.target
-      if (frontier.has(s)) {
+      if (frontier.has(s) && !keep.has(t)) {
         next.add(t)
         keep.add(t)
       }
-      if (frontier.has(t)) {
+      if (frontier.has(t) && !keep.has(s)) {
         next.add(s)
         keep.add(s)
       }
@@ -75,116 +100,128 @@ function buildEgoGraph(data, centerId, hop = 2) {
   }
 }
 
-function buildPriorityGraph(data, limit = 60) {
-  const topIds = new Set(data.top.slice(0, limit).map((t) => t.gid))
-  const keep = new Set(topIds)
-  for (const link of data.links) {
-    if (topIds.has(link.source)) keep.add(link.target)
-    if (topIds.has(link.target)) keep.add(link.source)
-  }
-  const ranked = data.nodes
-    .filter((n) => keep.has(n.id))
+/**
+ * Role-filtered subgraph: nodes of the role + bridging connectors along
+ * shortest undirected paths so the tree stays connected.
+ */
+function buildRoleGraph(data, role, preferredRoot, limit = 48) {
+  const byRole = data.nodes
+    .filter((n) => n.role === role)
     .sort((a, b) => b.priority_score - a.priority_score)
-    .slice(0, 320)
-  const ids = new Set(ranked.map((n) => n.id))
-  return {
-    nodes: ranked.map((n) => ({ ...n })),
-    links: data.links
-      .filter((l) => ids.has(l.source) && ids.has(l.target))
-      .map((l) => ({ ...l })),
-  }
-}
 
-/** Adjacency for undirected traversal over directed money links */
-function buildAdj(links) {
-  const adj = new Map()
-  const add = (a, b, sum) => {
-    if (!adj.has(a)) adj.set(a, [])
-    adj.get(a).push({ id: b, sum_kzt: sum || 0 })
+  if (!byRole.length) return { nodes: [], links: [], rootId: preferredRoot }
+
+  const roleIds = new Set(byRole.slice(0, limit).map((n) => n.id))
+  if (preferredRoot && data.nodes.some((n) => n.id === preferredRoot && n.role === role)) {
+    roleIds.add(preferredRoot)
   }
-  for (const l of links) {
-    const s = linkId(l.source)
-    const t = linkId(l.target)
-    add(s, t, l.sum_kzt)
-    add(t, s, l.sum_kzt)
+
+  const rootId =
+    (preferredRoot && roleIds.has(preferredRoot) && preferredRoot) ||
+    byRole[0].id
+
+  // Include 1-hop neighbors of selected role nodes so hierarchy has edges
+  const keep = new Set(roleIds)
+  for (const l of data.links) {
+    if (roleIds.has(l.source)) keep.add(l.target)
+    if (roleIds.has(l.target)) keep.add(l.source)
   }
-  for (const list of adj.values()) {
-    list.sort((a, b) => b.sum_kzt - a.sum_kzt)
+
+  // Cap total size: keep all role nodes, then top neighbors by priority
+  if (keep.size > MAX_NODES) {
+    const extras = [...keep]
+      .filter((id) => !roleIds.has(id))
+      .map((id) => data.nodes.find((n) => n.id === id))
+      .filter(Boolean)
+      .sort((a, b) => b.priority_score - a.priority_score)
+      .slice(0, Math.max(0, MAX_NODES - roleIds.size))
+      .map((n) => n.id)
+    keep.clear()
+    roleIds.forEach((id) => keep.add(id))
+    extras.forEach((id) => keep.add(id))
   }
-  return adj
+
+  return {
+    nodes: data.nodes.filter((n) => keep.has(n.id)).map((n) => ({ ...n })),
+    links: data.links.filter((l) => keep.has(l.source) && keep.has(l.target)),
+    rootId,
+  }
 }
 
 /**
- * Hierarchical tree from root: level 0 = root (top), then BFS layers.
- * Excess children collapse into a synthetic branch node unless expanded.
+ * Hierarchical tree — real nodes only (no collapsed / synthetic nodes).
  */
-function layoutTreeGraph(subgraph, rootId, expanded, collapsedLabel) {
-  if (!subgraph.nodes.length) return { nodes: [], links: [], treeLinks: new Set() }
+function layoutTreeGraph(subgraph, rootId, opts = {}) {
+  const maxDepth = opts.maxDepth ?? MAX_DEPTH
+  const levelGap = opts.levelGap ?? LEVEL_GAP
+  const siblingGap = opts.siblingGap ?? SIBLING_GAP
+  const maxNodes = opts.maxNodes ?? MAX_NODES
+
+  if (!subgraph.nodes.length) return { nodes: [], links: [], rootId }
 
   const nodeMap = new Map(subgraph.nodes.map((n) => [n.id, { ...n }]))
   if (!nodeMap.has(rootId)) {
     const fallback = subgraph.nodes
       .slice()
       .sort((a, b) => (b.priority_score || 0) - (a.priority_score || 0))[0]
-    if (!fallback) return { nodes: [], links: [], treeLinks: new Set() }
+    if (!fallback) return { nodes: [], links: [], rootId }
     rootId = fallback.id
   }
 
-  const adj = buildAdj(subgraph.links)
+  const { undirected, out, inn } = buildAdjMaps(subgraph.links)
   const parentOf = new Map()
   const childrenOf = new Map()
   const depthOf = new Map([[rootId, 0]])
   const visited = new Set([rootId])
   const queue = [rootId]
 
+  const rankNeighbors = (u) => {
+    const seen = new Set()
+    const ranked = []
+    for (const n of out.get(u) || []) {
+      if (!visited.has(n.id) && nodeMap.has(n.id) && !seen.has(n.id)) {
+        seen.add(n.id)
+        ranked.push({ ...n, _pref: 2 })
+      }
+    }
+    for (const n of inn.get(u) || []) {
+      if (!visited.has(n.id) && nodeMap.has(n.id) && !seen.has(n.id)) {
+        seen.add(n.id)
+        ranked.push({ ...n, _pref: 1 })
+      }
+    }
+    for (const n of undirected.get(u) || []) {
+      if (!visited.has(n.id) && nodeMap.has(n.id) && !seen.has(n.id)) {
+        seen.add(n.id)
+        ranked.push({ ...n, _pref: 0 })
+      }
+    }
+    ranked.sort((a, b) => b._pref - a._pref || b.sum_kzt - a.sum_kzt)
+    return ranked
+  }
+
   while (queue.length) {
     const u = queue.shift()
     const depth = depthOf.get(u)
-    const neigh = (adj.get(u) || []).filter((n) => !visited.has(n.id) && nodeMap.has(n.id))
-    const isExpanded = expanded.has(u)
-    const visible = isExpanded ? neigh : neigh.slice(0, MAX_CHILDREN)
-    const hidden = isExpanded ? [] : neigh.slice(MAX_CHILDREN)
-
     childrenOf.set(u, [])
-    for (const n of visible) {
+    if (depth >= maxDepth || visited.size >= maxNodes) continue
+
+    const neigh = rankNeighbors(u)
+    for (const n of neigh) {
+      if (visited.size >= maxNodes) break
       visited.add(n.id)
       parentOf.set(n.id, u)
       depthOf.set(n.id, depth + 1)
       childrenOf.get(u).push(n.id)
       queue.push(n.id)
     }
-
-    if (hidden.length > 0) {
-      const cid = `__collapsed__${u}`
-      const collapsedNode = {
-        id: cid,
-        role: 'peripheral',
-        priority_score: 0,
-        is_seed: false,
-        depth: depth + 1,
-        cluster_id: -1,
-        _collapsed: true,
-        _parent: u,
-        _hiddenIds: hidden.map((h) => h.id),
-        _count: hidden.length,
-        label: collapsedLabel(hidden.length),
-      }
-      nodeMap.set(cid, collapsedNode)
-      parentOf.set(cid, u)
-      depthOf.set(cid, depth + 1)
-      childrenOf.get(u).push(cid)
-      visited.add(cid)
-    }
   }
 
-  // Drop nodes not reachable from the root — keeps the hierarchy readable
+  // Drop unreachable nodes — only BFS tree members
   for (const id of [...nodeMap.keys()]) {
-    if (!depthOf.has(id) && !String(id).startsWith('__collapsed__')) {
-      nodeMap.delete(id)
-    }
+    if (!depthOf.has(id)) nodeMap.delete(id)
   }
 
-  // Leaf-order for tidy horizontal placement
   const leafOrder = []
   function walk(id) {
     const kids = childrenOf.get(id) || []
@@ -197,13 +234,13 @@ function layoutTreeGraph(subgraph, rootId, expanded, collapsedLabel) {
   walk(rootId)
 
   const xOf = new Map()
-  leafOrder.forEach((id, i) => xOf.set(id, i * SIBLING_GAP))
+  leafOrder.forEach((id, i) => xOf.set(id, i * siblingGap))
 
   function assignX(id) {
     if (xOf.has(id)) return xOf.get(id)
     const kids = childrenOf.get(id) || []
     if (!kids.length) {
-      const x = (xOf.size || 0) * SIBLING_GAP
+      const x = (xOf.size || 0) * siblingGap
       xOf.set(id, x)
       return x
     }
@@ -214,56 +251,62 @@ function layoutTreeGraph(subgraph, rootId, expanded, collapsedLabel) {
   }
   assignX(rootId)
 
-  // Center tree around x=0
   const xs = [...xOf.values()]
   const mid = xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : 0
 
-  const treeLinks = new Set()
   const positioned = []
   for (const [id, depth] of depthOf) {
     const n = nodeMap.get(id)
     if (!n) continue
     const x = (xOf.get(id) ?? 0) - mid
-    const y = depth * LEVEL_GAP
+    const y = depth * levelGap
     n.fx = x
     n.fy = y
+    n.x = x
+    n.y = y
     n._treeDepth = depth
     n._isRoot = id === rootId
     positioned.push(n)
-    const p = parentOf.get(id)
-    if (p != null) treeLinks.add(`${p}|${id}`)
   }
 
-  // Keep original money links among real nodes + tree edges to collapsed
-  const realIds = new Set(positioned.filter((n) => !n._collapsed).map((n) => n.id))
-  const links = []
+  const moneyByPair = new Map()
   for (const l of subgraph.links) {
     const s = linkId(l.source)
     const t = linkId(l.target)
-    if (realIds.has(s) && realIds.has(t)) {
-      links.push({
-        ...l,
-        source: s,
-        target: t,
-        _tree: treeLinks.has(`${s}|${t}`) || treeLinks.has(`${t}|${s}`),
-      })
-    }
-  }
-  for (const [id, p] of parentOf) {
-    const child = nodeMap.get(id)
-    if (child?._collapsed) {
-      links.push({
-        source: p,
-        target: id,
-        sum_kzt: 0,
-        n_tx: 0,
-        _tree: true,
-        _collapsedEdge: true,
-      })
-    }
+    moneyByPair.set(`${s}|${t}`, l)
+    moneyByPair.set(`${t}|${s}`, l)
   }
 
-  return { nodes: positioned, links, treeLinks, rootId }
+  const links = []
+  for (const [id, p] of parentOf) {
+    if (!nodeMap.has(id)) continue
+    const money = moneyByPair.get(`${p}|${id}`)
+    links.push({
+      ...(money || { sum_kzt: 0, n_tx: 0 }),
+      source: p,
+      target: id,
+      _tree: true,
+    })
+  }
+
+  return { nodes: positioned, links, rootId }
+}
+
+function ensureVisible(fg, node, root, height) {
+  if (!fg || !node || !Number.isFinite(node.y)) return
+  // Prefer keeping root above; if selection is far below, pan down
+  if (root && Number.isFinite(root.y)) {
+    const span = Math.max(node.y - root.y, LEVEL_GAP)
+    const targetY = root.y + span * 0.45
+    const zoom = Math.min(
+      1.4,
+      Math.max(0.5, (height * 0.78) / (span + LEVEL_GAP * 2)),
+    )
+    fg.centerAt(root.x ?? 0, targetY, 350)
+    fg.zoom(zoom, 350)
+  } else {
+    fg.centerAt(node.x, node.y, 350)
+  }
 }
 
 export default function App() {
@@ -272,8 +315,9 @@ export default function App() {
   const [query, setQuery] = useState('')
   const [roleFilter, setRoleFilter] = useState('all')
   const [selectedId, setSelectedId] = useState(null)
+  /** Stable tree root — only changes on search / rank / explicit re-root */
+  const [treeRootId, setTreeRootId] = useState(null)
   const [mode, setMode] = useState('network')
-  const [dayIdx, setDayIdx] = useState(0)
   const [graphSize, setGraphSize] = useState({ width: 0, height: 0 })
   const [locale, setLocale] = useState(() => {
     try {
@@ -282,9 +326,9 @@ export default function App() {
       return 'ru'
     }
   })
-  const [expanded, setExpanded] = useState(() => new Set())
   const fgRef = useRef()
   const graphHostRef = useRef(null)
+  const cameraKeyRef = useRef('')
   const i = LOCALES[locale]
 
   useEffect(() => {
@@ -303,8 +347,11 @@ export default function App() {
       })
       .then((json) => {
         setData(json)
-        if (json.top?.[0]) setSelectedId(json.top[0].gid)
-        if (json.timeseries?.length) setDayIdx(Math.min(16, json.timeseries.length - 1))
+        const first = json.top?.[0]?.gid
+        if (first) {
+          setSelectedId(first)
+          setTreeRootId(first)
+        }
       })
       .catch((e) => setError(e.message))
   }, [])
@@ -335,54 +382,68 @@ export default function App() {
   const roleCards = useMemo(() => {
     if (!data) return []
     const total = data.meta.n_nodes || 1
-    return ROLE_ORDER.map((role, i) => {
+    return ROLE_ORDER.map((role, idx) => {
       const count = data.meta.roles?.[role] || 0
       const share = (count / total) * 100
-      const delta = Number((((share % 7) - 3.2) * (i % 2 === 0 ? 1 : -1)).toFixed(1))
+      const delta = Number((((share % 7) - 3.2) * (idx % 2 === 0 ? 1 : -1)).toFixed(1))
       return { role, count, delta }
     })
   }, [data])
 
-  const rootId = selectedId || data?.top?.[0]?.gid
+  const effectiveRoot =
+    treeRootId || selectedId || data?.top?.[0]?.gid || null
 
   const graphData = useMemo(() => {
-    if (!data || !rootId) return { nodes: [], links: [] }
-    let g =
-      mode === 'hunt'
-        ? buildEgoGraph(data, rootId, 2)
-        : buildPriorityGraph(data, 55)
+    if (!data || !effectiveRoot) return { nodes: [], links: [], rootId: null }
+
+    let subgraph
+    let root = effectiveRoot
 
     if (roleFilter !== 'all') {
-      const ids = new Set(g.nodes.filter((n) => n.role === roleFilter).map((n) => n.id))
-      ids.add(rootId)
-      g = {
-        nodes: g.nodes.filter((n) => ids.has(n.id)),
-        links: g.links.filter(
-          (l) => ids.has(linkId(l.source)) && ids.has(linkId(l.target)),
-        ),
+      const roleGraph = buildRoleGraph(data, roleFilter, effectiveRoot, 48)
+      subgraph = roleGraph
+      root = roleGraph.rootId
+    } else if (mode === 'priority') {
+      const topIds = new Set(data.top.slice(0, 40).map((t) => t.gid))
+      topIds.add(effectiveRoot)
+      subgraph = {
+        nodes: data.nodes.filter((n) => topIds.has(n.id)).map((n) => ({ ...n })),
+        links: data.links.filter((l) => topIds.has(l.source) && topIds.has(l.target)),
       }
+    } else {
+      subgraph = buildEgoGraph(data, effectiveRoot, 2)
     }
 
-    return layoutTreeGraph(g, rootId, expanded, i.collapsedBranch)
-  }, [data, mode, rootId, roleFilter, expanded, i])
+    return layoutTreeGraph(subgraph, root, {
+      maxDepth: MAX_DEPTH,
+      maxNodes: MAX_NODES,
+      levelGap: LEVEL_GAP,
+      siblingGap: SIBLING_GAP,
+    })
+  }, [data, effectiveRoot, roleFilter, mode])
 
+  // Recenter only when tree structure changes (root / filter / mode), not on node select
   useEffect(() => {
     const fg = fgRef.current
     if (!fg || !graphSize.width || !graphSize.height) return
+    if (!graphData.nodes.length) return
+
+    const key = `${graphData.rootId}|${roleFilter}|${mode}|${graphData.nodes.length}`
+    if (cameraKeyRef.current === key) return
+    cameraKeyRef.current = key
+
+    const root = graphData.nodes.find((n) => n._isRoot) || graphData.nodes[0]
     const t = setTimeout(() => {
-      fg.zoomToFit(400, 64)
-    }, 120)
+      const maxDepth = Math.max(...graphData.nodes.map((n) => n._treeDepth || 0), 1)
+      const zoom = Math.min(
+        1.25,
+        Math.max(0.45, (graphSize.height * 0.8) / ((maxDepth + 1.2) * LEVEL_GAP)),
+      )
+      fg.centerAt(root.fx ?? 0, (root.fy ?? 0) + maxDepth * LEVEL_GAP * 0.32, 400)
+      fg.zoom(zoom, 400)
+    }, 60)
     return () => clearTimeout(t)
-  }, [
-    graphData.nodes.length,
-    graphData.links.length,
-    graphSize.width,
-    graphSize.height,
-    mode,
-    roleFilter,
-    rootId,
-    expanded,
-  ])
+  }, [graphData, graphSize.width, graphSize.height, roleFilter, mode])
 
   const neighbors = useMemo(() => {
     if (!data || !selectedId) return { in: [], out: [] }
@@ -421,26 +482,57 @@ export default function App() {
       .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
   }, [data, selectedId])
 
-  const focusNode = useCallback((id) => {
-    if (String(id).startsWith('__collapsed__')) return
+  /** Select node without rebuilding the tree */
+  const selectNode = useCallback(
+    (id, { pan = true } = {}) => {
+      setSelectedId(id)
+      if (!pan) return
+      requestAnimationFrame(() => {
+        const fg = fgRef.current
+        if (!fg) return
+        const nodes = fg.graphData()?.nodes || []
+        const node = nodes.find((n) => n.id === id)
+        const root = nodes.find((n) => n._isRoot)
+        if (node) ensureVisible(fg, node, root, graphSize.height)
+      })
+    },
+    [graphSize.height],
+  )
+
+  /** Re-root the tree (search / ranking / explicit) */
+  const reRootTree = useCallback((id) => {
+    setTreeRootId(id)
     setSelectedId(id)
     setMode('hunt')
-    setExpanded(new Set())
+    cameraKeyRef.current = ''
   }, [])
 
   const onNodeClick = useCallback(
     (node) => {
-      if (node._collapsed) {
-        setExpanded((prev) => {
-          const next = new Set(prev)
-          next.add(node._parent)
-          return next
-        })
-        return
-      }
-      focusNode(node.id)
+      // Keep tree structure — only update selection + gentle pan
+      selectNode(node.id, { pan: true })
     },
-    [focusNode],
+    [selectNode],
+  )
+
+  const onRoleFilter = useCallback(
+    (role) => {
+      setRoleFilter(role)
+      cameraKeyRef.current = ''
+      if (role === 'all') return
+      // Keep current selection if it matches the role; else pick top of role
+      if (!data) return
+      const current = data.nodes.find((n) => n.id === selectedId)
+      if (current?.role === role) return
+      const topOfRole = data.nodes
+        .filter((n) => n.role === role)
+        .sort((a, b) => b.priority_score - a.priority_score)[0]
+      if (topOfRole) {
+        setTreeRootId(topOfRole.id)
+        setSelectedId(topOfRole.id)
+      }
+    },
+    [data, selectedId],
   )
 
   const onSearch = (e) => {
@@ -453,7 +545,8 @@ export default function App() {
       data.nodes.find((n) => n.id.includes(q))
     if (hit) {
       setError('')
-      focusNode(hit.id)
+      setRoleFilter('all')
+      reRootTree(hit.id)
     } else setError(i.notFound(q))
   }
 
@@ -465,9 +558,6 @@ export default function App() {
 
   if (error && !data) return <div className="error">{error}</div>
   if (!data) return <div className="loading">{i.loading}</div>
-
-  const day = data.timeseries?.[dayIdx]
-  const realNodeCount = graphData.nodes.filter((n) => !n._collapsed).length
 
   return (
     <div className="app">
@@ -506,7 +596,7 @@ export default function App() {
               onClick={() => {
                 setMode('network')
                 setRoleFilter('all')
-                setExpanded(new Set())
+                cameraKeyRef.current = ''
               }}
             >
               {i.navNetwork}
@@ -515,7 +605,7 @@ export default function App() {
               type="button"
               role="tab"
               className={mode === 'hunt' ? 'active' : ''}
-              onClick={() => selectedId && setMode('hunt')}
+              onClick={() => setMode('hunt')}
             >
               {i.navHunt}
             </button>
@@ -526,7 +616,11 @@ export default function App() {
               onClick={() => {
                 setMode('priority')
                 setRoleFilter('all')
-                if (data.top?.[0]) setSelectedId(data.top[0].gid)
+                if (data.top?.[0]) {
+                  setTreeRootId(data.top[0].gid)
+                  setSelectedId(data.top[0].gid)
+                }
+                cameraKeyRef.current = ''
               }}
             >
               {i.navPriority}
@@ -563,7 +657,7 @@ export default function App() {
               <button
                 type="button"
                 className={`role-item ${roleFilter === 'all' ? 'active' : ''}`}
-                onClick={() => setRoleFilter('all')}
+                onClick={() => onRoleFilter('all')}
               >
                 <div className="role-ico" style={{ background: 'var(--ff-green)' }}>
                   Σ
@@ -583,7 +677,7 @@ export default function App() {
                 <button
                   type="button"
                   className={`role-item ${roleFilter === c.role ? 'active' : ''}`}
-                  onClick={() => setRoleFilter(c.role)}
+                  onClick={() => onRoleFilter(c.role)}
                   title={i.roleTooltips[c.role]}
                 >
                   <div
@@ -620,7 +714,7 @@ export default function App() {
 
         <main className="canvas">
           <div className="graph-badge">
-            {i.graphShown(realNodeCount, graphData.links.filter((l) => !l._collapsedEdge).length)}
+            {i.graphShown(graphData.nodes.length, graphData.links.length)}
             {error ? ` · ${error}` : ''}
           </div>
           <div className="zoom">
@@ -639,63 +733,42 @@ export default function App() {
                 height={graphSize.height}
                 graphData={graphData}
                 nodeId="id"
-                linkDirectionalArrowLength={(l) => (l._collapsedEdge ? 0 : 3.2)}
+                linkDirectionalArrowLength={4}
                 linkDirectionalArrowRelPos={1}
                 linkWidth={(l) =>
-                  l._collapsedEdge
-                    ? 1.2
-                    : Math.max(0.35, Math.log10((l.sum_kzt || 1) + 1) * 0.55)
+                  Math.max(1.3, Math.log10((l.sum_kzt || 1) + 1) * 0.65)
                 }
-                linkColor={(l) =>
-                  l._collapsedEdge
-                    ? 'rgba(107, 117, 133, 0.45)'
-                    : l._tree
-                      ? 'rgba(107, 117, 133, 0.45)'
-                      : 'rgba(107, 117, 133, 0.18)'
-                }
-                linkLineDash={(l) => (l._collapsedEdge ? [4, 3] : null)}
+                linkColor={() => 'rgba(22, 71, 52, 0.4)'}
                 backgroundColor="rgba(0,0,0,0)"
                 enableNodeDrag={false}
+                enableZoomInteraction
+                enablePanInteraction
                 cooldownTicks={0}
+                warmupTicks={0}
                 d3AlphaDecay={1}
+                d3VelocityDecay={1}
                 nodeCanvasObject={(node, ctx, globalScale) => {
-                  if (node._collapsed) {
-                    const r = 14
-                    ctx.beginPath()
-                    ctx.arc(node.x, node.y, r, 0, 2 * Math.PI)
-                    ctx.fillStyle = '#eef2f6'
-                    ctx.fill()
-                    ctx.strokeStyle = '#6b7585'
-                    ctx.lineWidth = 1.2 / globalScale
-                    ctx.setLineDash([3 / globalScale, 2 / globalScale])
-                    ctx.stroke()
-                    ctx.setLineDash([])
-                    ctx.font = `${11 / globalScale}px Montserrat`
-                    ctx.fillStyle = '#6b7585'
-                    ctx.textAlign = 'center'
-                    ctx.textBaseline = 'middle'
-                    ctx.fillText(node.label || `+${node._count}`, node.x, node.y)
-                    ctx.textAlign = 'left'
-                    ctx.textBaseline = 'alphabetic'
-                    return
-                  }
-
                   const hot =
                     node.role === 'consolidator' ||
                     node.role === 'coordinator' ||
                     node.role === 'distributor'
-                  const isFocus = node.id === selectedId || node._isRoot
-                  const r =
-                    2.2 +
-                    11 * (node.priority_score || 0) +
-                    (node.is_seed ? 2 : 0) +
-                    (isFocus ? 4 : 0) +
-                    (hot ? 1.2 : 0)
+                  const isSelected = node.id === selectedId
+                  const isRoot = node._isRoot
+                  const r = Math.max(
+                    5,
+                    3 +
+                      10 * (node.priority_score || 0) +
+                      (node.is_seed ? 2 : 0) +
+                      (isSelected || isRoot ? 3.5 : 0) +
+                      (hot ? 1 : 0),
+                  )
 
-                  if (isFocus) {
+                  if (isSelected || isRoot) {
                     ctx.beginPath()
-                    ctx.arc(node.x, node.y, r + 6, 0, 2 * Math.PI)
-                    ctx.fillStyle = 'rgba(2, 177, 64, 0.12)'
+                    ctx.arc(node.x, node.y, r + 7, 0, 2 * Math.PI)
+                    ctx.fillStyle = isSelected
+                      ? 'rgba(2, 177, 64, 0.16)'
+                      : 'rgba(14, 21, 28, 0.06)'
                     ctx.fill()
                   }
 
@@ -703,19 +776,24 @@ export default function App() {
                   ctx.arc(node.x, node.y, r, 0, 2 * Math.PI)
                   ctx.fillStyle = ROLE_COLOR[node.role] || '#888'
                   ctx.fill()
-                  if (isFocus || hot) {
-                    ctx.strokeStyle = isFocus ? '#0e151c' : 'rgba(2,177,64,0.7)'
-                    ctx.lineWidth = (isFocus ? 2 : 1) / globalScale
+                  if (isSelected || isRoot || hot) {
+                    ctx.strokeStyle = isSelected
+                      ? '#0e151c'
+                      : isRoot
+                        ? '#164734'
+                        : 'rgba(2,177,64,0.65)'
+                    ctx.lineWidth = (isSelected || isRoot ? 2 : 1) / globalScale
                     ctx.stroke()
                   }
-                  if (globalScale > 1.1 || isFocus || node.priority_score > 0.62) {
-                    ctx.font = `${(isFocus ? 12 : 10) / globalScale}px Montserrat`
+                  if (
+                    globalScale > 1.05 ||
+                    isSelected ||
+                    isRoot ||
+                    node.priority_score > 0.55
+                  ) {
+                    ctx.font = `${(isSelected || isRoot ? 12 : 10) / globalScale}px Montserrat`
                     ctx.fillStyle = '#0e151c'
-                    ctx.fillText(
-                      String(node.id).slice(-6),
-                      node.x + r + 3,
-                      node.y + 3,
-                    )
+                    ctx.fillText(String(node.id).slice(-6), node.x + r + 3, node.y + 3)
                   }
                 }}
                 onNodeClick={onNodeClick}
@@ -799,7 +877,7 @@ export default function App() {
                                 <button
                                   type="button"
                                   className="tx-cp"
-                                  onClick={() => focusNode(t.counterparty)}
+                                  onClick={() => selectNode(t.counterparty)}
                                   title={t.counterparty}
                                 >
                                   …{t.counterparty.slice(-8)}
@@ -821,12 +899,20 @@ export default function App() {
                   <div className="neighbors">
                     <h3>{i.linkAgg}</h3>
                     {neighbors.in.map((n) => (
-                      <button key={`i-${n.id}`} type="button" onClick={() => focusNode(n.id)}>
+                      <button
+                        key={`i-${n.id}`}
+                        type="button"
+                        onClick={() => selectNode(n.id)}
+                      >
                         ← …{n.id.slice(-8)} · {n.n_tx} tx · {formatKzt(n.sum_kzt, locale)}
                       </button>
                     ))}
                     {neighbors.out.map((n) => (
-                      <button key={`o-${n.id}`} type="button" onClick={() => focusNode(n.id)}>
+                      <button
+                        key={`o-${n.id}`}
+                        type="button"
+                        onClick={() => selectNode(n.id)}
+                      >
                         → …{n.id.slice(-8)} · {n.n_tx} tx · {formatKzt(n.sum_kzt, locale)}
                       </button>
                     ))}
@@ -855,7 +941,7 @@ export default function App() {
                     <tr
                       key={t.gid}
                       className={t.gid === selectedId ? 'active' : ''}
-                      onClick={() => focusNode(t.gid)}
+                      onClick={() => reRootTree(t.gid)}
                     >
                       <td>{t.rank}</td>
                       <td>
@@ -881,33 +967,6 @@ export default function App() {
           </div>
         </aside>
       </div>
-
-      <footer className="timeline">
-        <div className="timeline-label">
-          {i.slice}&nbsp;
-          <strong>{day?.day || '2026-07'}</strong>
-        </div>
-        <div className="track">
-          <div className="track-line" />
-          <div className="months">
-            {[i.periodJul, '', '', '', '', '', '', '', '', '', '', i.periodAug].map(
-              (m, idx) => (
-                <span key={idx}>{m}</span>
-              ),
-            )}
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={Math.max((data.timeseries?.length || 1) - 1, 0)}
-            value={dayIdx}
-            onChange={(e) => setDayIdx(Number(e.target.value))}
-          />
-        </div>
-        <div className="timeline-label" style={{ textAlign: 'right' }}>
-          {day ? formatKzt(day.sum_kzt, locale) : '—'}
-        </div>
-      </footer>
     </div>
   )
 }

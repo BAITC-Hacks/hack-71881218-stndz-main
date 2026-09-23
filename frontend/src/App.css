@@ -1,6 +1,6 @@
 .app {
   display: grid;
-  grid-template-rows: auto 1fr 64px;
+  grid-template-rows: auto 1fr;
   height: 100%;
   min-height: 100vh;
   background: var(--bg);
@@ -693,76 +693,7 @@
   background: var(--ff-green-soft);
 }
 
-/* —— timeline —— */
-.timeline {
-  display: grid;
-  grid-template-columns: 120px 1fr 110px;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0 1.25rem;
-  border-top: 1px solid var(--line);
-  background: #fff;
-}
-
-.timeline-label {
-  font-size: 0.75rem;
-  color: var(--muted);
-}
-
-.timeline-label strong {
-  color: var(--ff-green-dark);
-  font-weight: 700;
-}
-
-.track {
-  position: relative;
-  height: 28px;
-  display: flex;
-  align-items: center;
-}
-
-.track-line {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 3px;
-  background: var(--line);
-  border-radius: 2px;
-}
-
-.track input[type="range"] {
-  width: 100%;
-  appearance: none;
-  background: transparent;
-  position: relative;
-  z-index: 1;
-}
-
-.track input[type="range"]::-webkit-slider-thumb {
-  appearance: none;
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: var(--ff-green);
-  border: 3px solid #fff;
-  box-shadow: 0 0 0 2px rgba(2, 177, 64, 0.35);
-  cursor: pointer;
-}
-
-.months {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  justify-content: space-between;
-  pointer-events: none;
-  align-items: flex-end;
-}
-
-.months span {
-  font-size: 0.58rem;
-  color: var(--muted);
-  transform: translateY(10px);
-}
+/* —— timeline removed — graph uses full height —— */
 
 .loading,
 .error {
@@ -808,13 +739,6 @@
 
   .top-actions {
     justify-content: flex-start;
-  }
-
-  .timeline {
-    grid-template-columns: 1fr;
-    gap: 0.35rem;
-    padding: 0.55rem 1rem 0.75rem;
-    height: auto;
   }
 
   .logo-text span {
