@@ -36,6 +36,8 @@ def checks(store: GraphStore) -> list[Check]:
         Check("node", "Объясни роль выбранного клиента.", "get_node", {"gid": gid}, gid),
         Check("neighbors", "Кому выбранный клиент переводит деньги?", "neighbors",
               {"gid": gid, "direction": "out"}, gid),
+        Check("card", "Каких данных не хватает по выбранному клиенту и что запросить дальше?",
+              "node_card", {"gid": gid}, gid),
     ])
     incoming = next((edges for edges in store.in_links.values() if len(edges) >= 2), None)
     if incoming:
@@ -82,8 +84,8 @@ async def run_checks(copilot: Copilot, selected: list[Check]) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--all", action="store_true", help="проверить все пять типов вопросов")
-    group.add_argument("--case", choices=["top", "node", "neighbors", "common", "path"], default="top")
+    group.add_argument("--all", action="store_true", help="проверить все шесть типов вопросов")
+    group.add_argument("--case", choices=["top", "node", "neighbors", "card", "common", "path"], default="top")
     args = parser.parse_args()
     try:
         settings = LLMSettings.from_env()

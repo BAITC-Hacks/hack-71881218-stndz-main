@@ -24,7 +24,7 @@ python -m pip install -r requirements.txt; if ($LASTEXITCODE -eq 0) { python run
 
 Рекомендуется предварительно создать виртуальную среду: `python -m venv .venv`, затем `source .venv/bin/activate` (Bash) или `.venv\Scripts\Activate.ps1` (PowerShell). Без активации используйте `.venv/Scripts/python.exe` (Windows) или `.venv/bin/python` (Linux/macOS).
 
-Команда за ≈ 5 секунд (лимит ТЗ — 5 минут) создаёт в `output/`: `nodes_roles.csv`, `clusters.csv`, `top_nodes.csv` и `graph.json`. Параметры: `--data-dir` (по умолчанию `data`), `--output-dir` (по умолчанию `output`).
+Команда за ≈ 5 секунд (лимит ТЗ — 5 минут) создаёт в `output/`: `nodes_roles.csv`, `clusters.csv`, `top_nodes.csv` и `graph.json`. Три CSV из последнего прогона уже лежат в репозитории — их можно посмотреть без запуска; повторный прогон воспроизводит их побайтно. Параметры: `--data-dir` (по умолчанию `data`), `--output-dir` (по умолчанию `output`).
 
 ### 2. Открыть интерфейс
 
@@ -213,7 +213,7 @@ API ничего не пересчитывает: при старте читае
 
 ### Ассистент: `POST /api/ask`
 
-Без настройки модели работает разбор типовых вопросов по правилам. Локальная Ollama работает без API-ключа (инструкция ниже). Пример в Bash:
+Без настройки LLM работает разбор типовых вопросов по правилам. Локальная модель Ollama работает в режиме `llm` без ключа — см. ниже. Пример в Bash:
 
 ```sh
 curl -sS http://localhost:8000/api/ask -H 'Content-Type: application/json' -d '{"question":"Топ 5 по priority_score","selected_gid":null}'
@@ -225,27 +225,37 @@ curl -sS http://localhost:8000/api/ask -H 'Content-Type: application/json' -d '{
 Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/ask -ContentType 'application/json; charset=utf-8' -Body '{"question":"Топ 5 по priority_score","selected_gid":null}'
 ```
 
-Поддерживаются карточка узла, входящие/исходящие соседи, общие прямые получатели указанных узлов, топ по метрике и направленный путь. Для LLM с OpenAI-совместимым Chat Completions и tool calling задайте **перед запуском сервера** `LLM_BASE_URL` (с префиксом, например `https://api.openai.com/v1`), `LLM_API_KEY` и `LLM_MODEL`.
+Поддерживаются карточка узла, входящие/исходящие соседи, общие прямые получатели указанных узлов, топ по метрике и направленный путь.
 
-LLM только выбирает функции `get_node`, `neighbors`, `common_collectors`, `top_by`, `path`. Ссылки на gid разрешены только из вопроса, выбранного узла или полученных результатов. Итоговые суммы, связи и карточки строятся серверными шаблонами **из результатов функций**; свободный текст модели в ответ не попадает. При ошибке провайдера срабатывает фолбэк на правилах.
+Для LLM с OpenAI-совместимым Chat Completions и tool calling задайте переменные **перед запуском сервера** или запишите их в локальный `backend/.env` (исключён из Git); переменные процесса важнее файла:
+
+| Переменная | Значение |
+|---|---|
+| `LLM_PROVIDER` | `openai` (по умолчанию) или `ollama` для локальной модели без ключа |
+| `LLM_BASE_URL` | базовый URL API с префиксом, например `https://api.openai.com/v1`; приложение добавляет `/chat/completions` |
+| `LLM_API_KEY` | ключ внешнего провайдера; для Ollama пустой. В режиме `openai` пустой ключ включает разбор по правилам |
+| `LLM_MODEL` | идентификатор модели у провайдера |
+| `LLM_TIMEOUT_SECONDS` | лимит времени на один вопрос, по умолчанию 30 секунд |
+
+LLM только выбирает функции `get_node`, `neighbors`, `common_collectors`, `top_by`, `path`, `node_card` (пробелы в данных и следующий запрос). Ссылки на gid разрешены только из вопроса, выбранного узла или полученных результатов. Итоговые суммы, связи и карточки строятся серверными шаблонами **из результатов функций**; свободный текст модели в ответ не попадает. При ошибке провайдера срабатывает фолбэк на правилах.
 
 Запрос: `{"question": "...", "selected_gid": null | "<gid>"}`; явные gid в вопросе важнее выделения. Ответ: `answer`, `gids` (строковые идентификаторы упомянутых существующих узлов), `mode` (`llm` или `rules`). Подробный контракт и примеры вопросов — [docs/COPILOT_API.md](docs/COPILOT_API.md).
 
-### Локальная LLM через Ollama
+### Локальная LLM без API-ключа
 
-Установите [Ollama](https://ollama.com/download), затем выполните из корня репозитория:
+Установите [Ollama](https://ollama.com/download), затем из корня репозитория:
 
 ```sh
 ollama pull qwen3:4b
 ollama create moneygraph-qwen3:4b -f backend/ollama.Modelfile
 ```
 
-Скопируйте `backend/.env.example` в `backend/.env`, если локального файла ещё нет, и перезапустите FastAPI. Профиль задаёт `LLM_PROVIDER=ollama`, `LLM_BASE_URL=http://127.0.0.1:11434/v1`, `LLM_MODEL=moneygraph-qwen3:4b`, пустой `LLM_API_KEY` и общий бюджет вопроса `LLM_TIMEOUT_SECONDS=60`. Переменные процесса имеют приоритет над файлом; `.env` исключён из Git.
+Скопируйте `backend/.env.example` в `backend/.env`, если локального файла ещё нет, и перезапустите FastAPI. Профиль использует Ollama на `http://127.0.0.1:11434/v1`, API-ключ не нужен. Данные не покидают машину.
 
-Модель возвращает ограниченный JSON-план, сервер проверяет аргументы и выполняет выбранную функцию. Допустимые gid берутся из вопроса/выделения, фактический ответ строится из результатов функции. Разовый замер после загрузки модели на CPU: около 4–10 секунд на вопрос.
+Проверить именно LLM, а не фолбэк:
 
 ```sh
 python -m backend.check_copilot --all
 ```
 
-Проверка требует настоящий `mode=llm`; фолбэк не засчитывается как успех. Подробности: [docs/OLLAMA_SETUP.md](docs/OLLAMA_SETUP.md). На объединённом проекте `python -m pytest tests -q`: **130 passed**; сборка UI и живой запрос через прокси Vite также прошли.
+Команда проверяет шесть типов вопросов и завершается ошибкой при `mode="rules"`. Установка, настройки, диагностика — [docs/OLLAMA_SETUP.md](docs/OLLAMA_SETUP.md). Ollama опциональна: без неё ассистент отвечает по правилам, а движок, выгрузки и интерфейс от LLM не зависят.
