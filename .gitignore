@@ -1,2 +1,10 @@
 .venv/
 venv/
+out/
+__pycache__/
+.DS_Store
+*.pyc
+node_modules/
+frontend/dist/
+frontend/node_modules/
+lib/
