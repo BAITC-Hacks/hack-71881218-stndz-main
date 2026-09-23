@@ -53,6 +53,7 @@ export default function CopilotPanel({
   locale,
   labels,
   onOpenGid,
+  available = true,
 }) {
   const [open, setOpen] = useState(false)
   const [draft, setDraft] = useState('')
@@ -70,7 +71,7 @@ export default function CopilotPanel({
   const ask = useCallback(
     async (raw) => {
       const question = String(raw || '').trim()
-      if (!question || busy) return
+      if (!question || busy || !available) return
       if (question.length > 2000) return
 
       setDraft('')
@@ -80,6 +81,7 @@ export default function CopilotPanel({
       try {
         const response = await fetch('/api/ask', {
           method: 'POST',
+          signal: AbortSignal.timeout(60000),
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             question,
@@ -112,7 +114,7 @@ export default function CopilotPanel({
         setBusy(false)
       }
     },
-    [busy, selectedId, labels],
+    [busy, selectedId, labels, available],
   )
 
   const onSubmit = (e) => {
@@ -127,7 +129,8 @@ export default function CopilotPanel({
           type="button"
           className="copilot-fab"
           onClick={() => setOpen(true)}
-          title={labels.title}
+          title={available ? labels.title : 'Подключите API для работы ассистента'}
+          disabled={!available}
         >
           {labels.fab}
         </button>
@@ -158,7 +161,7 @@ export default function CopilotPanel({
                 key={s}
                 type="button"
                 className="copilot-chip"
-                disabled={busy}
+                disabled={busy || !available}
                 onClick={() => ask(s)}
               >
                 {s}
@@ -167,6 +170,7 @@ export default function CopilotPanel({
           </div>
 
           <div className="copilot-messages" ref={listRef}>
+            {!available && <div className="inline-error">API недоступен. Восстановите подключение, чтобы задать вопрос.</div>}
             {messages.length === 0 && (
               <div className="copilot-empty">{labels.hint}</div>
             )}
@@ -217,11 +221,11 @@ export default function CopilotPanel({
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               placeholder={labels.placeholder}
-              disabled={busy}
+              disabled={busy || !available}
               maxLength={2000}
               aria-label={labels.placeholder}
             />
-            <button type="submit" disabled={busy || !draft.trim()}>
+            <button type="submit" disabled={busy || !draft.trim() || !available}>
               {labels.send}
             </button>
           </form>

@@ -1,56 +1,24 @@
 :root {
-  /* Freedom Bank Kazakhstan — bankffin.kz */
-  --ff-green: #02b140;
-  --ff-green-dark: #164734;
-  --ff-green-soft: rgba(2, 177, 64, 0.1);
-  --ff-blue: #4aa3e8;
-  --ff-blue-soft: #e8f4fc;
-
-  --bg: #f5f7fa;
-  --bg-elev: #ffffff;
-  --panel: #ffffff;
-  --panel-2: #f0f3f7;
-  --line: #e4e8ee;
-  --text: #0e151c;
-  --muted: #6b7585;
-  --danger: #e53935;
-  --warn: #f5a623;
-
-  --consolidator: #e53935;
-  --coordinator: #c9a227;
-  --distributor: #f0873b;
-  --transit: #4aa3e8;
-  --terminal: #02b140;
-  --peripheral: #8a94a3;
-
-  font-family: Montserrat, sans-serif;
-  color: var(--text);
-  background: var(--bg);
-  line-height: 1.45;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  color: #24342d;
+  background: #f5f7f6;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --text: #24342d;
+  --muted: #75817b;
+  --line: #e5ebe7;
+  --green: #16754f;
+  --soft-green: #eef6f1;
 }
-
-* {
-  box-sizing: border-box;
-}
-
-html,
-body,
-#root {
-  margin: 0;
-  height: 100%;
-}
-
-body {
-  background: var(--bg);
-}
-
-button,
-input,
-select {
-  font: inherit;
-  color: inherit;
-}
-
-button {
-  cursor: pointer;
-}
+* { box-sizing: border-box; }
+html, body, #root { margin: 0; min-width: 360px; height: 100%; }
+body { line-height: 1.5; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+button:disabled { cursor: not-allowed; opacity: .5; }
+button, a, input, select, summary { -webkit-tap-highlight-color: transparent; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, summary:focus-visible { outline: 2px solid #16805b; outline-offset: 3px; }
+button { transition: background .15s, border-color .15s, box-shadow .15s; }
+a { color: inherit; }
+::selection { background: #ccebd7; }

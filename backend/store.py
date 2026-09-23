@@ -7,14 +7,15 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
+from datetime import date
+from math import isfinite
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-# Порядок поиска: output/ (run_pipeline.py — официальный пайплайн) → out/ (прежний pipeline.py)
-# → копия во frontend. MONEYGRAPH_GRAPH_JSON задаёт файл явно.
+# Порядок поиска: официальный output/ → синхронизированная копия во frontend.
+# MONEYGRAPH_GRAPH_JSON задаёт файл явно.
 CANDIDATES = [
     ROOT / "output" / "graph.json",
-    ROOT / "out" / "graph.json",
     ROOT / "frontend" / "public" / "data" / "graph.json",
 ]
 
@@ -23,8 +24,8 @@ def normalize(raw: dict) -> dict:
     """Приводит graph.json к виду {nodes[id, метрики], links[source, target]}.
 
     Поддерживает два формата:
-      * pipeline.py — уже в этом виде, возвращается как есть;
-      * движок участника 1 (docs/GRAPH_DATA_CONTRACT.md §5) — nodes[gid, metrics, flags], edges[src, dst].
+      * нормализованный API-формат — уже в этом виде, возвращается как есть;
+      * официальный экспорт (docs/GRAPH_DATA_CONTRACT.md §5) — nodes[gid, metrics, flags], edges[src, dst].
     """
     if "links" in raw or "edges" not in raw:
         return raw
@@ -53,8 +54,10 @@ class GraphStore:
     links: list[dict]
     top: list[dict]
     clusters: list[dict]
+    transactions: list[dict] | None = None
     out_links: dict[str, list[dict]] = field(default_factory=dict)
     in_links: dict[str, list[dict]] = field(default_factory=dict)
+    node_transactions: dict[str, list[dict]] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "GraphStore":
@@ -66,6 +69,7 @@ class GraphStore:
             path = next((p for p in CANDIDATES if p.is_file()), None)
             if path is None:
                 raise FileNotFoundError("graph.json не найден — запустите python run_pipeline.py")
+        path = path.resolve()
         raw = normalize(json.loads(path.read_text(encoding="utf-8")))
         gids = [node["id"] for node in raw["nodes"]]
         if any(not isinstance(gid, str) or not re.fullmatch(r"[0-9]{18}", gid) for gid in gids):
@@ -79,6 +83,7 @@ class GraphStore:
             links=raw["links"],
             top=raw.get("top", []),
             clusters=raw.get("clusters", []),
+            transactions=raw.get("transactions"),
         )
         pairs = set()
         for link in store.links:
@@ -90,4 +95,30 @@ class GraphStore:
             pairs.add(pair)
             store.out_links.setdefault(link["source"], []).append(link)
             store.in_links.setdefault(link["target"], []).append(link)
+        if store.transactions is not None:
+            if not isinstance(store.transactions, list):
+                raise ValueError("graph.json: transactions должен быть массивом")
+            for transaction in store.transactions:
+                if (not isinstance(transaction, dict)
+                        or not isinstance(transaction.get("src"), str)
+                        or not isinstance(transaction.get("dst"), str)
+                        or transaction.get("src") not in store.nodes
+                        or transaction.get("dst") not in store.nodes):
+                    raise ValueError("graph.json: транзакция с неизвестным или нестроковым gid")
+                try:
+                    transaction_date = transaction["date"]
+                    if not isinstance(transaction_date, str) or date.fromisoformat(transaction_date).isoformat() != transaction_date:
+                        raise ValueError
+                    amount = transaction["sum_kzt"]
+                    if isinstance(amount, bool) or not isinstance(amount, (int, float)) or not isfinite(amount):
+                        raise ValueError
+                except (KeyError, TypeError, ValueError):
+                    raise ValueError("graph.json: некорректная дата или сумма транзакции") from None
+            store.transactions.sort(key=lambda row: (
+                -date.fromisoformat(row["date"]).toordinal(), row["src"], row["dst"], row["sum_kzt"]
+            ))
+            for transaction in store.transactions:
+                store.node_transactions.setdefault(transaction["src"], []).append(transaction)
+                if transaction["dst"] != transaction["src"]:
+                    store.node_transactions.setdefault(transaction["dst"], []).append(transaction)
         return store

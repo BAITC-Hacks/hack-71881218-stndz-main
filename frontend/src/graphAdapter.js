@@ -1,13 +1,15 @@
-// Accept both the official graph-engine contract (gid/metrics/flags/edges)
-// and the legacy UI contract (id/links/top).
+// Accept the official static export and the normalized API snapshot.
 export function normalizeGraphPayload(raw) {
+  if (!raw || !Array.isArray(raw.nodes)) throw new Error('Некорректная выгрузка графа.')
   const nodes = (raw.nodes || []).map((node) => {
+    const id = node.id ?? node.gid
+    if (typeof id !== 'string' || !/^\d{18}$/.test(id)) throw new Error('GID должен передаваться точной строкой из 18 цифр.')
     const metrics = node.metrics || {}
     const flags = Array.isArray(node.flags) ? node.flags : []
     return {
       ...metrics,
       ...node,
-      id: String(node.id ?? node.gid),
+      id,
       priority_score: Number(node.priority_score || 0),
       flags,
       truncated_by_depth:
@@ -20,6 +22,7 @@ export function normalizeGraphPayload(raw) {
     target: String(edge.target ?? edge.dst),
   }))
   const nodeById = new Map(nodes.map((node) => [node.id, node]))
+  if (nodeById.size !== nodes.length || links.some(link => !nodeById.has(link.source) || !nodeById.has(link.target))) throw new Error('Узлы и связи выгрузки не согласованы.')
   let top = Array.isArray(raw.top) ? raw.top : []
   if (!top.length) {
     const ranked = nodes.filter((node) => Number.isFinite(node.rank))
@@ -49,6 +52,7 @@ export function normalizeGraphPayload(raw) {
   }
   const roles = {}
   for (const node of nodes) roles[node.role] = (roles[node.role] || 0) + 1
+  const whyById = new Map(top.map(row => [row.gid, row.why]))
   return {
     ...raw,
     meta: {
@@ -57,11 +61,12 @@ export function normalizeGraphPayload(raw) {
       n_edges: raw.meta?.n_edges ?? raw.meta?.edges ?? links.length,
       roles: raw.meta?.roles || roles,
     },
-    nodes,
+    nodes: nodes.map(node => ({ ...node, why: whyById.get(node.id) })),
     links,
     top,
-    clusters: raw.clusters || [],
+    clusters: (raw.clusters || []).map(cluster => ({ ...cluster, top_gids: Array.isArray(cluster.top_gids) ? cluster.top_gids : String(cluster.top_gids || '').split(';').filter(Boolean) })),
     transactions: raw.transactions || [],
+    transactionsAvailable: raw.meta?.transactions_available ?? Array.isArray(raw.transactions),
     timeseries: raw.timeseries || [],
   }
 }

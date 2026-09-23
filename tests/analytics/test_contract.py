@@ -168,3 +168,28 @@ def test_pipeline_outputs_ignore_input_row_order(export_dir, tmp_path):
     original["meta"].pop("generated_at")
     reordered["meta"].pop("generated_at")
     assert original == reordered
+
+
+def test_exported_transactions_preserve_raw_transfers_and_period(exported):
+    _, _, _, payload = exported
+    raw = pd.read_parquet(ROOT / config.DATA_DIR / config.TRANSACTIONS_FILE)
+    raw["date"] = pd.to_datetime(raw["date"])
+    ordered = raw.sort_values(
+        ["date", "src", "dst", "sum_kzt"], ascending=[False, True, True, True]
+    )
+    expected = [
+        {"src": str(row.src), "dst": str(row.dst), "date": row.date.date().isoformat(),
+         "sum_kzt": float(row.sum_kzt)}
+        for row in ordered.itertuples(index=False)
+    ]
+    assert payload["transactions"] == expected
+    assert len(payload["transactions"]) == payload["meta"]["tx"] == len(raw)
+    assert payload["meta"]["date_from"] == raw.date.min().date().isoformat()
+    assert payload["meta"]["date_to"] == raw.date.max().date().isoformat()
+
+    # The detailed history must reconcile with the aggregate links shown in the graph.
+    sums = raw.groupby(["src", "dst"]).sum_kzt.agg(["sum", "size"])
+    for edge in payload["edges"]:
+        aggregate = sums.loc[(int(edge["src"]), int(edge["dst"]))]
+        assert edge["sum_kzt"] == pytest.approx(aggregate["sum"])
+        assert edge["n_tx"] == aggregate["size"]

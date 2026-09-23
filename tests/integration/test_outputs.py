@@ -3,12 +3,9 @@
 Пайплайн запускается во временную папку, данные фронта не трогаются.
 Запуск: python -m pytest tests/integration -v
 
-Какой пайплайн проверять, задаёт переменная MONEYGRAPH_PIPELINE:
-  engine (по умолчанию) — run_pipeline.py + analytics/ (участник 1), официальный пайплайн
-  legacy                — прежний pipeline.py
+Проверяется единственный официальный пайплайн: run_pipeline.py + analytics/.
 """
 
-import os
 import subprocess
 import sys
 import time
@@ -27,22 +24,11 @@ ALLOWED_ROLES = {
 }
 MAX_SECONDS = 300
 
-PIPELINE = os.environ.get("MONEYGRAPH_PIPELINE", "engine")
-COMMANDS = {
-    "legacy": lambda dest: [
-        str(ROOT / "pipeline.py"), "--data", str(DATA), "--out", str(dest / "out"),
-        "--frontend", str(dest / "frontend"), "--no-viz"],
-    "engine": lambda dest: [
-        str(ROOT / "run_pipeline.py"), "--data-dir", str(DATA), "--output-dir", str(dest / "out")],
-}
-if PIPELINE not in COMMANDS:
-    raise ValueError(f"MONEYGRAPH_PIPELINE={PIPELINE!r}, ожидается одно из {sorted(COMMANDS)}")
-
-
 def run_pipeline(dest: Path) -> float:
     start = time.monotonic()
     subprocess.run(
-        [sys.executable, *COMMANDS[PIPELINE](dest)],
+        [sys.executable, str(ROOT / "run_pipeline.py"), "--data-dir", str(DATA),
+         "--output-dir", str(dest / "out")],
         cwd=ROOT, check=True, capture_output=True,
     )
     return time.monotonic() - start

@@ -2,7 +2,7 @@
 
 Решение команды **STNDZ MAIN** для HackAlem AI. По обезличенной сети переводов инструмент помогает AML-аналитику ответить: **«кого смотреть первым и почему?»** Движок рассчитывает структурные и временные признаки, назначает объяснимую роль каждому из 2 248 узлов, выделяет сообщества и формирует топ-30 для проверки. Веб-интерфейс показывает направления переводов, роли, карточку и связи найденного клиента; опциональный AI-ассистент отвечает на вопросы по графу. Результат — гипотезы по наблюдаемым данным, а не утверждения о виновности.
 
-Объяснение без технических подробностей: [как устроен проект и кто за что отвечает](docs/PROJECT_EXPLAINED.md). Сценарий защиты: [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md).
+Сценарий защиты: [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md). Текущая схема передачи данных и проверки: [docs/DELIVERY_STATUS.md](docs/DELIVERY_STATUS.md).
 
 ## Быстрый старт
 
@@ -26,16 +26,35 @@ python -m pip install -r requirements.txt; if ($LASTEXITCODE -eq 0) { python run
 
 Команда за ≈ 5 секунд (лимит ТЗ — 5 минут) создаёт в `output/`: `nodes_roles.csv`, `clusters.csv`, `top_nodes.csv` и `graph.json`. Параметры: `--data-dir` (по умолчанию `data`), `--output-dir` (по умолчанию `output`).
 
-### 2. Открыть интерфейс
+### 2. Запустить приложение одной командой
+
+Один раз установите зависимости API и интерфейса:
 
 ```sh
+python -m pip install -r backend/requirements.txt
 npm --prefix frontend ci
+python start_dev.py
+```
+
+`start_dev.py` пересчитывает официальные выгрузки, запускает FastAPI на **http://127.0.0.1:8000**, дожидается готовности API и запускает интерфейс на **http://127.0.0.1:5173**. `Ctrl+C` останавливает оба сервера. Если порты заняты, задайте другие: `python start_dev.py --api-port 8001 --web-port 5175`. Скрипт использует тот же Python, которым запущен; активируйте виртуальную среду заранее.
+
+Для раздельного запуска после `python run_pipeline.py` откройте два терминала:
+
+```sh
+# Терминал 1
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
+
+```sh
+# Терминал 2
 npm --prefix frontend run dev
 ```
 
-Откройте адрес из терминала, обычно **http://localhost:5173**. Перед стартом `dev` и `build` автоматически копируют `output/graph.json` в `frontend/public/data/` (скрипт `sync-data`); после нового прогона движка перезапустите `dev` или выполните `npm --prefix frontend run sync-data` и обновите страницу. Сервер API для интерфейса не обязателен — без него недоступен только чат ассистента.
+Интерфейс получает граф через `/api/graph`. При недоступном API открывается локальная копия с явным индикатором состояния: граф, поиск, кластеры, топ, история и CSV остаются доступны; для серверной карточки с рекомендациями, устойчивости и ассистента нужен FastAPI. Перед `dev` и `build` скрипт `sync-data` копирует **все четыре файла** из `output/` в `frontend/public/data/`. Если какого-то файла нет, запуск завершается с указанием выполнить `python run_pipeline.py`.
 
-Сборка для показа без dev-сервера: `npm --prefix frontend run build`, затем `npm --prefix frontend run preview` (обычно **http://localhost:4173**).
+После нового расчёта перезапустите API, выполните `npm --prefix frontend run sync-data` и обновите страницу. Сборка для показа: `npm --prefix frontend run build`, затем `npm --prefix frontend run preview` (обычно **http://localhost:4173**). API должен работать и при preview; оба сервера Vite проксируют `/api` на `http://127.0.0.1:8000`. Для другого адреса задайте `API_PROXY` перед запуском Vite; общий launcher делает это сам.
+
+Детали frontend: [frontend/README.md](frontend/README.md).
 
 ### 3. Проверить результат
 
@@ -56,7 +75,7 @@ python -m pytest tests -v
 |---|---|---|
 | Движок | `analytics/`, `run_pipeline.py` | Python, pandas, NumPy, NetworkX 3.7, SciPy |
 | Интерфейс | `frontend/` | React 19, Vite, react-force-graph-2d |
-| API и ассистент (опционально) | `backend/` | FastAPI; LLM через OpenAI-совместимый API или без LLM на правилах |
+| API и ассистент | `backend/` | FastAPI; опциональная LLM через OpenAI-совместимый API или ответы на правилах |
 
 Пороги и константы движка собраны в [`analytics/config.py`](analytics/config.py); решения с обоснованием — [`docs/GRAPH_DECISIONS.md`](docs/GRAPH_DECISIONS.md).
 
@@ -149,13 +168,15 @@ Louvain с `weight="sum_kzt"` и `seed=42` на NetworkX 3.7 даёт **91 со�
 | `output/nodes_roles.csv` | 2 248 строк: обязательные `gid, role, role_score, cluster_id, priority_score, evidence` и признаки узла |
 | `output/clusters.csv` | `cluster_id, n_nodes, n_seed, sum_kzt_internal, top_gids, hypothesis`; `top_gids` через `;` |
 | `output/top_nodes.csv` | 30 строк: `rank, gid, role, priority_score, why` |
-| `output/graph.json` | данные интерфейса и API: `meta`, `nodes` (`gid`, признаки в `metrics`, флаги в `flags`), `edges` (`src`, `dst`), `clusters` |
+| `output/graph.json` | данные интерфейса и API: `meta`, `nodes` (`gid`, признаки в `metrics`, флаги в `flags`), `edges` (`src`, `dst`), `clusters` и реальные `transactions` |
 
 Контракт `graph.json` и словарь флагов (`truncated_by_depth`, `seed_inflow_incomplete`, `outflow_exceeds_inflow`, `isolated`, `external_funding`) — [docs/GRAPH_DATA_CONTRACT.md](docs/GRAPH_DATA_CONTRACT.md).
 
 ## Интерфейс аналитика
 
-Режимы: **Network** — топ-узлы с окружением; **Hunt** — найденный узел и его связи; **Priority** — топ-лист; кластер — выбранное сообщество. Журнал и история отдельных переводов заполняются, только если `graph.json` содержит `transactions`; текущая выгрузка движка их не включает. Цвет узла — роль, размер — приоритет, стрелки — направление денег. Поиск по полному `gid` открывает карточку: роль, evidence, суммы, контрагенты. Панель ассистента отправляет вопрос в `/api/ask` через прокси Vite (по умолчанию `http://127.0.0.1:8000`, переопределяется переменной `API_PROXY`); gid в ответе кликабельны.
+Рабочий сценарий: открыть топ-30 → выбрать клиента → изучить его направленные связи и evidence → посмотреть кластер, входящие и исходящие транзакции → скачать CSV. Поиск принимает полный строковый `gid`, включая изолированных клиентов. Цвет узла показывает роль, размер — приоритет; направление перевода отмечено стрелкой. Ограничения отображения графа указаны рядом со схемой, выбранный узел сохраняется при переходах.
+
+Карточка запрашивает `/api/nodes/{gid}/card` и показывает наблюдаемые потоки, причины роли, пробелы данных и следующий запрос аналитика. История использует реальные транзакции из официального экспорта; отсутствие операций явно отделено от ошибки загрузки. Кластеры содержат размер, число seed, внутренний оборот и гипотезу. Топ показывает все 30 строк с объяснениями. Моделирование изъятия узлов вызывает `/api/resilience`; ассистент — `/api/ask`, ссылки на GID открывают соответствующего клиента.
 
 ## Ограничения данных и метода
 
@@ -182,7 +203,7 @@ Louvain с `weight="sum_kzt"` и `seed=42` на NetworkX 3.7 даёт **91 со�
 
 Перед переносом: заменить проверку «ровно 2 248 строк» на покрытие входного множества узлов, измерить время и пик памяти на синтетических графах нескольких размеров, сравнить топы и роли с малым эталоном. GPU — возможная оптимизация, а не обязательное условие запуска.
 
-## API и AI-ассистент (опционально)
+## API и опциональный AI-ассистент
 
 ```sh
 python -m pip install -r backend/requirements.txt
@@ -191,7 +212,17 @@ python -m uvicorn backend.main:app --port 8000
 
 В другом терминале: `curl http://localhost:8000/api/health` (в Windows при необходимости `curl.exe`). Ожидаются `status: "ok"`, `source: "output/graph.json"`, `nodes: 2248`, `links: 3119`. Swagger: **http://localhost:8000/docs**.
 
-API ничего не пересчитывает: при старте читает готовый `graph.json` и строит индексы. Порядок поиска: `output/graph.json` → `out/graph.json` → `frontend/public/data/graph.json`; файл можно задать явно через `MONEYGRAPH_GRAPH_JSON`. После нового прогона движка перезапустите сервер.
+API ничего не пересчитывает: при старте читает готовый `graph.json` и строит индексы. Официальный источник — `output/graph.json`; файл можно задать явно через `MONEYGRAPH_GRAPH_JSON`. `start_dev.py` всегда закрепляет этот источник абсолютным путём. После нового прогона движка перезапустите сервер. Единственная точка расчёта — `run_pipeline.py`; устаревшая альтернативная реализация удалена.
+
+| Endpoint | Данные для интерфейса |
+|---|---|
+| `GET /api/health` | доступность и источник набора |
+| `GET /api/graph` | полный официальный снимок графа со строковыми GID |
+| `GET /api/nodes/{gid}/card` | карточка, ограничения и следующий запрос |
+| `GET /api/nodes/{gid}/transactions` | реальные операции выбранного узла |
+| `GET /api/exports/{filename}` | официальные CSV и `graph.json` |
+| `GET /api/resilience?n=10` | сравнение связности до и после изъятия топ-N |
+| `POST /api/ask` | ответ ассистента со ссылками на узлы |
 
 ### Карточка узла и оценка полноты: `GET /api/nodes/{gid}/card`
 

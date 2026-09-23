@@ -1,16 +1,55 @@
-# React + Vite
+# MoneyGraph AI — интерфейс аналитика
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+React 19, Vite и react-force-graph-2d. Интерфейс использует официальный результат `run_pipeline.py`: роли, приоритеты, кластеры, связи и транзакции из одного снимка данных.
 
-Currently, two official plugins are available:
+## Запуск
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Из корня репозитория после установки Python-зависимостей и `npm --prefix frontend ci`:
 
-## React Compiler
+```sh
+python start_dev.py
+```
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Launcher пересчитывает `output/`, запускает API на порту 8000 и интерфейс на 5173. Другие порты: `python start_dev.py --api-port 8001 --web-port 5175`. `Ctrl+C` останавливает запущенные им серверы.
 
-## Expanding the Oxlint configuration
+Для разработки в отдельных терминалах:
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and Oxlint's TypeScript related rules in your project.
+```sh
+python run_pipeline.py
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
+
+```sh
+npm --prefix frontend run dev
+```
+
+Перед `dev` и `build` выполняется `sync-data`: **graph.json и все три CSV** копируются из `output/` в `frontend/public/data/`. Если хотя бы одного файла нет, команда завершается с ошибкой и инструкцией запустить движок. Ручное редактирование копий создаёт расхождение с расчётом; изменения данных вносятся через пайплайн.
+
+## Данные и сервер
+
+Первый источник — `GET /api/graph`. Если API недоступен, интерфейс явно показывает работу с локальной выгрузкой и позволяет повторить подключение. Локальная копия обеспечивает просмотр графа, поиск, топ-30, кластеры, транзакции и скачивание CSV. Серверная карточка с рекомендациями, анализ устойчивости и ассистент доступны с работающим API.
+
+Vite проксирует `/api` на `http://127.0.0.1:8000` в **dev и preview**. Адрес можно переопределить переменной `API_PROXY`; `start_dev.py` устанавливает её в соответствии с `--api-port`.
+
+| Действие | Endpoint |
+|---|---|
+| Данные сети | `GET /api/graph` |
+| Карточка выбранного клиента | `GET /api/nodes/{gid}/card` |
+| Входящие и исходящие операции | `GET /api/nodes/{gid}/transactions` |
+| Скачать результат движка | `GET /api/exports/{filename}` |
+| Изъять топ-N и сравнить связность | `GET /api/resilience?n=10` |
+| Спросить ассистента | `POST /api/ask` |
+
+Все GID остаются строками. Роль и уверенность в структурном правиле не означают виновность; приоритет определяет порядок проверки внутри данной выборки.
+
+## Проверки и preview
+
+```sh
+npm --prefix frontend run lint
+npm --prefix frontend run build
+npm --prefix frontend run preview
+```
+
+Preview использует созданный `dist/`. После обновления выгрузок повторите build; работающий API нужен для полного сценария. Для проверки вручную найдите обычный и изолированный GID, откройте кластер, убедитесь в наличии всех 30 приоритетов, сравните CSV с `output/`, проверьте транзакции и переход по ссылке GID из ответа ассистента.
+
+Общие инструкции и формулы: [README проекта](../README.md). Сценарий показа: [DEMO_SCRIPT.md](../docs/DEMO_SCRIPT.md).

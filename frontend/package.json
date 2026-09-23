@@ -8,6 +8,7 @@
     "dev": "npm run sync-data && vite",
     "build": "npm run sync-data && vite build",
     "lint": "oxlint",
+    "test": "node --test src/*.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

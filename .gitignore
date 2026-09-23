@@ -9,3 +9,7 @@ frontend/dist/
 frontend/node_modules/
 lib/
 .claude/settings.local.json
+/output/graph.json
+/output/nodes_roles.csv
+/output/clusters.csv
+/output/top_nodes.csv

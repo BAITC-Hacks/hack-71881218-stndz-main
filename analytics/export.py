@@ -151,6 +151,21 @@ def build_graph_payload(
         for row in edges_with_dates.itertuples(index=False)
     ]
 
+    # Preserve individual transfers (including identical rows) in a stable order.
+    # Both the static UI and the API consume this same analytical snapshot.
+    ordered_transactions = transactions.sort_values(
+        ["date", "src", "dst", "sum_kzt"], ascending=[False, True, True, True], kind="mergesort"
+    )
+    json_transactions = [
+        {
+            "src": str(int(row.src)),
+            "dst": str(int(row.dst)),
+            "date": row.date.date().isoformat(),
+            "sum_kzt": float(row.sum_kzt),
+        }
+        for row in ordered_transactions.itertuples(index=False)
+    ]
+
     json_clusters = []
     for cluster in clusters.itertuples(index=False):
         members = nodes_roles.loc[nodes_roles["cluster_id"] == cluster.cluster_id]
@@ -185,11 +200,14 @@ def build_graph_payload(
             "seeds": int(nodes_roles["is_seed"].sum()),
             "total_kzt": fsum(edges["sum_kzt"]),
             "clusters": len(json_clusters),
+            "date_from": transactions["date"].min().date().isoformat() if json_transactions else None,
+            "date_to": transactions["date"].max().date().isoformat() if json_transactions else None,
             "generated_at": datetime.now(timezone.utc).replace(microsecond=config.ZERO).isoformat(),
         },
         "nodes": json_nodes,
         "edges": json_edges,
         "clusters": json_clusters,
+        "transactions": json_transactions,
     }
 
 
