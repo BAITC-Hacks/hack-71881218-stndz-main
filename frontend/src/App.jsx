@@ -405,6 +405,7 @@ export default function App() {
   const [seedFilter, setSeedFilter] = useState('all')
   const [selectedCluster, setSelectedCluster] = useState('')
   const [selectedId, setSelectedId] = useState(null)
+  const [nodeCard, setNodeCard] = useState(null)
   /** Stable tree root — only changes on search / rank / explicit re-root */
   const [treeRootId, setTreeRootId] = useState(null)
   /** Nodes whose transaction counterparties are pulled into the tree */
@@ -475,6 +476,25 @@ export default function App() {
     if (!data || !selectedId) return null
     return data.nodes.find((n) => n.id === selectedId) || null
   }, [data, selectedId])
+
+  useEffect(() => {
+    if (!selectedId) {
+      return undefined
+    }
+    const controller = new AbortController()
+    fetch(`/api/nodes/${encodeURIComponent(selectedId)}/card`, {
+      signal: controller.signal,
+    })
+      .then((response) => {
+        if (!response.ok) throw new Error(String(response.status))
+        return response.json()
+      })
+      .then(setNodeCard)
+      .catch((requestError) => {
+        if (requestError.name !== 'AbortError') setNodeCard(null)
+      })
+    return () => controller.abort()
+  }, [selectedId])
 
   const roleCards = useMemo(() => {
     if (!data) return []
@@ -739,10 +759,9 @@ export default function App() {
     e.preventDefault()
     const q = query.trim()
     if (!q || !data) return
-    const hit =
-      data.nodes.find((n) => n.id === q) ||
-      data.nodes.find((n) => n.id.endsWith(q)) ||
-      data.nodes.find((n) => n.id.includes(q))
+    const exact = data.nodes.find((n) => n.id === q)
+    const suffixMatches = exact ? [] : data.nodes.filter((n) => n.id.endsWith(q))
+    const hit = exact || (suffixMatches.length === 1 ? suffixMatches[0] : null)
     if (hit) {
       setError('')
       setRoleFilter('all')
@@ -751,6 +770,8 @@ export default function App() {
       } else {
         reRootTree(hit.id)
       }
+    } else if (suffixMatches.length > 1) {
+      setError(i.ambiguousGid(q, suffixMatches.length))
     } else setError(i.notFound(q))
   }
 
@@ -789,6 +810,7 @@ export default function App() {
             aria-label={i.searchPlaceholder}
           />
           <button type="submit">{i.searchBtn}</button>
+          {error && <span className="search-error" role="alert">{error}</span>}
         </form>
 
         <div className="top-actions">
@@ -1133,7 +1155,7 @@ export default function App() {
                   {i.cluster} #{selected.cluster_id}
                 </div>
                 <div className="score-row">
-                  <span>{i.roleScore}: <b>{((selected.role_score || 0) * 100).toFixed(0)}%</b></span>
+                  <span title={i.roleScoreHint}>{i.roleScore}: <b>{(selected.role_score || 0).toFixed(2).replace('.', locale === 'ru' ? ',' : '.')}</b></span>
                   <span>{i.priorityScore}: <b>{((selected.priority_score || 0) * 100).toFixed(0)}%</b></span>
                 </div>
 
@@ -1164,6 +1186,27 @@ export default function App() {
                   <strong>{i.hypothesisLabel}</strong>
                   <span>{selected.evidence}</span>
                 </div>
+
+                {nodeCard?.gid === selectedId && nodeCard.attention?.length > 0 && (
+                  <div className="api-insights attention-block">
+                    <h3>{i.attentionTitle}</h3>
+                    {nodeCard.attention.map((item, index) => (
+                      <p key={`${item.text}-${index}`}>{item.text}</p>
+                    ))}
+                  </div>
+                )}
+
+                {nodeCard?.gid === selectedId && nodeCard.data_gaps?.length > 0 && (
+                  <div className="api-insights gaps-block">
+                    <h3>{i.dataGapsTitle}</h3>
+                    {nodeCard.data_gaps.map((item, index) => (
+                      <div className="data-gap" key={`${item.gap}-${index}`}>
+                        <p>{item.gap}</p>
+                        <span>{i.nextRequest}: {item.next_request}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
 
                 {(selected.flags?.length > 0 || selected.truncated_by_depth) && (
                   <div className="quality-flags">

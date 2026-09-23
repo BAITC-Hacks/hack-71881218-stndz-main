@@ -16,6 +16,7 @@ export const LOCALES = {
     loading: 'Freedom Bank · загрузка графа…',
     loadError: 'Нет graph.json — запусти run_pipeline.py и синхронизацию данных frontend',
     notFound: (q) => `Клиент не найден: ${q}`,
+    ambiguousGid: (q, n) => `По окончанию «${q}» найдено ${n} клиентов — уточните полный gid`,
 
     sideHead: 'Роли в сети',
     allNetwork: 'Вся сеть',
@@ -61,8 +62,12 @@ export const LOCALES = {
     depth: 'глубина',
     cluster: 'кластер',
     roleScore: 'Соответствие роли',
+    roleScoreHint: 'Насколько узел превышает порог роли',
     priorityScore: 'Приоритет проверки',
     hypothesisLabel: 'Наблюдаемая гипотеза',
+    attentionTitle: 'На что обратить внимание',
+    dataGapsTitle: 'Пробелы в данных → следующий запрос',
+    nextRequest: 'Следующий запрос',
     dataQuality: 'Ограничения данных',
     flagLabels: {
       truncated_by_depth: 'Граница выгрузки: исходящие после 4-го колена не наблюдаются.',
@@ -179,6 +184,7 @@ export const LOCALES = {
     loading: 'Freedom Bank · loading graph…',
     loadError: 'Missing graph.json — run run_pipeline.py and sync frontend data',
     notFound: (q) => `Client not found: ${q}`,
+    ambiguousGid: (q, n) => `${n} clients end with “${q}” — enter the full gid`,
 
     sideHead: 'Network roles',
     allNetwork: 'Full network',
@@ -223,9 +229,13 @@ export const LOCALES = {
     seed: 'seed',
     depth: 'depth',
     cluster: 'cluster',
-    roleScore: 'Role confidence',
+    roleScore: 'Role threshold score',
+    roleScoreHint: 'How far the node exceeds its role threshold',
     priorityScore: 'Review priority',
     hypothesisLabel: 'Observed hypothesis',
+    attentionTitle: 'What to review',
+    dataGapsTitle: 'Data gaps → next request',
+    nextRequest: 'Next request',
     dataQuality: 'Data limitations',
     flagLabels: {
       truncated_by_depth: 'Export boundary: outgoing transfers after depth 4 are not observed.',

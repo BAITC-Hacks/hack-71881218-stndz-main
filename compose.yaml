@@ -1,0 +1,43 @@
+services:
+  pipeline:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    command: ["python", "run_pipeline.py", "--data-dir", "/app/data", "--output-dir", "/app/output"]
+    volumes:
+      - ./data:/app/data:ro
+      - ./output:/app/output
+    restart: "no"
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    depends_on:
+      pipeline:
+        condition: service_completed_successfully
+    ports:
+      - "${BACKEND_PORT:-8001}:8000"
+    volumes:
+      - ./output:/app/output:ro
+    env_file:
+      - path: ./backend/.env
+        required: false
+    environment:
+      MONEYGRAPH_GRAPH_JSON: /app/output/graph.json
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    depends_on:
+      backend:
+        condition: service_started
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./output:/app/output:ro
+    environment:
+      API_PROXY: http://backend:8000
+    restart: unless-stopped
