@@ -1,4 +1,4 @@
-"""Run the phase-one Graph Intelligence Engine scaffold."""
+"""Run the graph foundation, structural features, and role analysis."""
 
 import argparse
 from pathlib import Path
@@ -6,18 +6,20 @@ from pathlib import Path
 from analytics import config
 from analytics.export import (
     build_graph_payload,
+    add_pending_phase_fields,
     make_empty_exports,
-    make_placeholder_roles,
     write_csv_exports,
     write_graph_json,
 )
+from analytics.evidence import add_role_evidence
 from analytics.features import add_structural_features
 from analytics.graph import build_foundation_features, build_graph
 from analytics.loader import load_data, print_quality_report, validate_data
+from analytics.roles import assign_roles
 
 
 def parse_arguments() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Build MoneyGraph AI graph foundation exports")
+    parser = argparse.ArgumentParser(description="Build MoneyGraph AI graph and role exports")
     parser.add_argument("--data-dir", type=Path, default=config.DATA_DIR)
     parser.add_argument("--output-dir", type=Path, default=config.OUTPUT_DIR)
     return parser.parse_args()
@@ -32,7 +34,9 @@ def main() -> None:
     graph_context = build_graph(nodes, edges)
     features = build_foundation_features(nodes, graph_context)
     features = add_structural_features(features, graph_context)
-    nodes_roles = make_placeholder_roles(features)
+    nodes_roles = assign_roles(features)
+    nodes_roles = add_role_evidence(nodes_roles)
+    nodes_roles = add_pending_phase_fields(nodes_roles)
     clusters, top_nodes = make_empty_exports()
 
     write_csv_exports(nodes_roles, clusters, top_nodes, arguments.output_dir)

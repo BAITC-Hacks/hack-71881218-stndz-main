@@ -1,4 +1,4 @@
-"""Phase-one CSV and JSON scaffold exports."""
+"""CSV and JSON exports for the graph intelligence engine."""
 
 import json
 from datetime import datetime, timezone
@@ -12,14 +12,11 @@ from analytics import config
 from analytics.graph import GraphContext
 
 
-def make_placeholder_roles(features: pd.DataFrame) -> pd.DataFrame:
-    """Create schema-complete rows with explicit placeholders for later phases."""
-    result = features.copy()
-    result["role"] = config.ROLE_PLACEHOLDER
-    result["role_score"] = config.ROLE_SCORE_PLACEHOLDER
+def add_pending_phase_fields(nodes_roles: pd.DataFrame) -> pd.DataFrame:
+    """Add columns owned by community and priority phases that are not implemented yet."""
+    result = nodes_roles.copy()
     result["cluster_id"] = config.CLUSTER_ID_PLACEHOLDER
     result["priority_score"] = config.PRIORITY_SCORE_PLACEHOLDER
-    result["evidence"] = config.ROLE_PLACEHOLDER
     return result.loc[:, config.NODE_ROLE_COLUMNS]
 
 
