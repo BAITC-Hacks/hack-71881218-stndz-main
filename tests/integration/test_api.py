@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 
 import httpx
 import pytest
@@ -211,7 +212,9 @@ def test_store_env_missing_file_fails_loudly(tmp_path, monkeypatch):
 @pytest.fixture
 def api(graph, monkeypatch):
     store, ids = graph
-    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    # Локальный .env разработчика не должен включать реальные LLM в pytest.
+    monkeypatch.setenv("LLM_API_KEY", "")
+    monkeypatch.setenv("LLM_PROVIDER", "openai")
     monkeypatch.setattr(GraphStore, "load", classmethod(lambda cls, path=None: store))
     with TestClient(app) as client:
         yield client, ids
@@ -433,3 +436,109 @@ def test_api_fallback_keeps_agreed_response_shape(api):
     assert set(body) == {"answer", "gids", "mode"}
     assert body["mode"] == "rules" and body["gids"] == [ids["c"]]
     assert "LLM_MODEL не задан" in body["answer"]
+
+
+def test_ollama_calls_tools_without_api_key(graph):
+    store, ids = graph
+    requests = []
+
+    def handler(request):
+        assert str(request.url) == "http://127.0.0.1:11434/api/chat"
+        assert "authorization" not in request.headers
+        body = json.loads(request.content)
+        requests.append(body)
+        assert "tool_choice" not in body
+        assert body["think"] is False and body["stream"] is False
+        assert "tools" not in body
+        branch = next(branch for branch in body["format"]["oneOf"]
+                      if branch["properties"]["name"]["enum"] == ["get_node"])
+        assert branch["properties"]["arguments"]["properties"]["gid"]["enum"] == [ids["c"]]
+        return httpx.Response(200, json={"message": {"content": json.dumps({
+            "name": "get_node", "arguments": {"gid": ids["c"]},
+        })}, "done": True})
+
+    result = ask_mocked(store, "Карточка", handler, selected_gid=ids["c"], settings=LLMSettings(
+        provider="ollama", base_url="http://127.0.0.1:11434/v1", model="local-test-model",
+    ))
+    assert result.mode == "llm" and result.gids == [ids["c"]]
+    assert len(requests) == 1
+
+
+def test_total_llm_deadline_falls_back_and_cancels_request(graph):
+    store, ids = graph
+    cancelled = []
+
+    async def handler(request):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.append(True)
+
+    result = ask_mocked(store, "Карточка", handler, selected_gid=ids["c"], settings=LLMSettings(
+        provider="ollama", base_url="http://127.0.0.1:11434/v1", model="local-test-model",
+        timeout_seconds=0.02,
+    ))
+    assert result.mode == "rules" and result.gids == [ids["c"]]
+    assert result.warning and cancelled == [True]
+
+
+def test_dotenv_settings_and_explicit_environment_priority(tmp_path, monkeypatch):
+    names = ("LLM_PROVIDER", "LLM_BASE_URL", "LLM_MODEL", "LLM_API_KEY", "LLM_TIMEOUT_SECONDS")
+    for name in names:
+        monkeypatch.delenv(name, raising=False)
+    path = tmp_path / ".env"
+    path.write_text(
+        'LLM_PROVIDER=ollama\nLLM_MODEL="local-model"\nLLM_API_KEY=file-secret\nLLM_TIMEOUT_SECONDS=90\n',
+        encoding="utf-8",
+    )
+    settings = LLMSettings.from_env(path)
+    assert settings.provider == "ollama" and settings.model == "local-model"
+    assert settings.base_url == "http://127.0.0.1:11434/v1"
+    assert settings.timeout_seconds == 90
+    assert "file-secret" not in repr(settings)
+    monkeypatch.setenv("LLM_API_KEY", "")
+    monkeypatch.setenv("LLM_MODEL", "environment-model")
+    settings = LLMSettings.from_env(path)
+    assert settings.api_key == "" and settings.model == "environment-model"
+    assert "LLM_PROVIDER" not in os.environ  # Файл не меняет глобальное окружение.
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "0", "-1", "301", "not-a-number"])
+def test_invalid_llm_timeout_rejected(tmp_path, monkeypatch, value):
+    monkeypatch.setenv("LLM_TIMEOUT_SECONDS", value)
+    with pytest.raises(ValueError, match="LLM_TIMEOUT_SECONDS"):
+        LLMSettings.from_env(tmp_path / "missing.env")
+
+
+def test_live_checker_does_not_count_fallback_or_wrong_arguments_as_success(graph):
+    from backend.check_copilot import checks, matches
+
+    store, _ = graph
+    check = checks(store)[0]
+
+    def handler(request):
+        pytest.fail("Офлайн-фолбэк не должен обращаться в сеть")
+
+    fallback = ask_mocked(store, "Топ 3", handler, LLMSettings())
+    assert not matches(check, fallback, store)
+    assert matches(check, fallback.model_copy(update={"mode": "llm"}), store)
+    wrong = ask_mocked(store, "Топ 2", handler, LLMSettings())
+    assert not matches(check, wrong.model_copy(update={"mode": "llm"}), store)
+
+
+@pytest.mark.parametrize("kind", ["invented_gid", "numeric_gid", "clarify"])
+def test_ollama_plan_is_validated_even_with_constrained_generation(graph, kind):
+    store, ids = graph
+
+    def handler(request):
+        plan = {"name": "get_node", "arguments": {"gid": ids["f"]}}
+        if kind == "numeric_gid":
+            plan["arguments"]["gid"] = int(ids["a"])
+        elif kind == "clarify":
+            plan = {"name": "clarify", "arguments": {}}
+        return httpx.Response(200, json={"message": {"content": json.dumps(plan)}})
+
+    result = ask_mocked(store, f"Карточка {ids['a']}", handler, settings=LLMSettings(
+        provider="ollama", base_url="http://127.0.0.1:11434/v1", model="local-test-model",
+    ))
+    assert result.mode == "rules" and result.gids == [ids["a"]]
