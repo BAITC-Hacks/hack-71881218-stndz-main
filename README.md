@@ -91,20 +91,9 @@ Graph Engine выполняет Louvain по **неориентированно�
 
 ## Схема решения
 
-```mermaid
-flowchart TD
-    A["data/*.parquet: узлы, рёбра, транзакции"] --> B["pipeline.py: направленный граф + все узлы"]
-    B --> C["Степени, суммы, PageRank, betweenness, соседи-seed"]
-    B --> D["Неориентированная проекция → Louvain, seed=42"]
-    C --> E["Правила ролей → role_score → priority_score → evidence"]
-    D --> F["Кластеры и гипотезы"]
-    E --> G["out/: 3 CSV + graph.json"]
-    F --> G
-    G --> H["frontend/public/data/ → React + Vite → граф и карточка"]
-    G --> I["Опциональный FastAPI: GraphStore → /api/health и /api/ask"]
-    J["Вопрос → правила или LLM с функциями"] --> I
-    I --> K["Результаты функций → проверяемый шаблон ответа + ссылки на gid"]
-```
+![Схема решения: данные → проверка и граф → признаки → роли, кластеры, приоритет → выгрузки → интерфейс и AI-ассистент](docs/solution_scheme.svg)
+
+Файл схемы: [`docs/solution_scheme.svg`](docs/solution_scheme.svg), подходит и как слайд для защиты.
 
 Аналитика: Python, pandas, NumPy, NetworkX, SciPy. Интерфейс: React 19, Vite, react-force-graph-2d. Backend читает готовые результаты и строит индексы по строковому идентификатору и входящим/исходящим связям; роли и скоры не пересчитывает.
 
