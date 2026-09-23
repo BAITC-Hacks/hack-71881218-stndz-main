@@ -221,7 +221,7 @@ def api(graph, monkeypatch):
 
 
 @pytest.mark.parametrize("template,expected", [
-    ("Карточка {c}", "Входящие: 12000 KZT"),
+    ("Карточка {c}", "Входящие: 12 000 KZT от 2 плательщиков"),
     ("Входящие соседи {c}", "направление in"),
     ("Кому отправляет {a}", "направление out"),
     ("Кто собирает деньги с {a} и {b}?", "Общие прямые получатели"),
@@ -300,7 +300,7 @@ def test_llm_tool_chain_grounds_answer_and_ignores_final_fabrication(graph):
         body = json.loads(request.content)
         requests.append(body)
         assert body["model"] == "test-model"
-        assert len(body["tools"]) == 5
+        assert len(body["tools"]) == 6
         if len(requests) == 1:
             return httpx.Response(200, json=completion(tool_call("top_by", {"n": 1})))
         if len(requests) == 2:
@@ -313,7 +313,7 @@ def test_llm_tool_chain_grounds_answer_and_ignores_final_fabrication(graph):
     assert response.mode == "llm" and len(requests) == 3
     assert [row.name for row in response.tool_results] == ["top_by", "get_node"]
     assert response.gids == [ids["c"]]
-    assert "12000" in response.answer and "6000" in response.answer
+    assert "12 000 KZT" in response.answer and "6 000 KZT" in response.answer
     assert "987654321" not in response.answer and "Обвинение" not in response.answer
 
 
@@ -542,3 +542,54 @@ def test_ollama_plan_is_validated_even_with_constrained_generation(graph, kind):
         provider="ollama", base_url="http://127.0.0.1:11434/v1", model="local-test-model",
     ))
     assert result.mode == "rules" and result.gids == [ids["a"]]
+
+
+# ---------------------------------------------------------------- читаемость ответа и карточка
+
+def test_answer_rounds_scores_and_formats_money(api):
+    client, ids = api
+    from backend.store import GraphStore as _GS  # noqa: F401  (store подменён фикстурой api)
+    client.app.state.store.nodes[ids["c"]]["priority_score"] = 0.9934608540925266
+    body = client.post("/api/ask", json={"question": f"Карточка {ids['c']}"}).json()
+    assert "priority_score=0,99" in body["answer"]
+    assert "0.993" not in body["answer"] and "0.9934608540925266" not in body["answer"]
+    assert "role_score=0,50" in body["answer"]
+
+
+def test_answer_agrees_counts_with_nouns(api):
+    client, ids = api
+    body = client.post("/api/ask", json={"question": f"Карточка {ids['d']}"}).json()
+    assert "от 1 плательщика" in body["answer"]
+    assert "1 получатель." in body["answer"]
+
+
+def test_top_by_money_metric_is_formatted(api):
+    client, ids = api
+    body = client.post("/api/ask", json={"question": "Топ 1 по in_kzt"}).json()
+    assert f"{ids['c']}: 12 000 KZT" in body["answer"]
+
+
+@pytest.mark.parametrize("question", [
+    "Что запросить дальше по {e}?",
+    "Каких данных не хватает по {e}?",
+])
+def test_rules_route_data_gap_questions_to_node_card(api, question):
+    client, ids = api
+    body = client.post("/api/ask", json={"question": question.format(**ids)}).json()
+    assert body["mode"] == "rules"
+    assert "Следующий запрос" in body["answer"]
+    assert "исходящие переводы" in body["answer"].lower()
+    assert ids["e"] in body["gids"]
+
+
+def test_node_card_tool_uses_selected_node(api):
+    client, ids = api
+    body = client.post("/api/ask", json={"question": "Что запросить дальше?", "selected_gid": ids["b"]}).json()
+    assert "Следующий запрос" in body["answer"]
+    assert "входящие" in body["answer"].lower()
+
+
+def test_node_card_tool_lists_counterparties(graph):
+    store, ids = graph
+    card = GraphTools(store).run("node_card", {"gid": ids["c"]})
+    assert [p["gid"] for p in card["top_payers"]] == [ids["b"], ids["a"]]

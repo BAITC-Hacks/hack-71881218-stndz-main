@@ -24,7 +24,7 @@ python -m pip install -r requirements.txt; if ($LASTEXITCODE -eq 0) { python run
 
 Рекомендуется предварительно создать виртуальную среду: `python -m venv .venv`, затем `source .venv/bin/activate` (Bash) или `.venv\Scripts\Activate.ps1` (PowerShell). Без активации используйте `.venv/Scripts/python.exe` (Windows) или `.venv/bin/python` (Linux/macOS).
 
-Команда за ≈ 5 секунд (лимит ТЗ — 5 минут) создаёт в `output/`: `nodes_roles.csv`, `clusters.csv`, `top_nodes.csv` и `graph.json`. Параметры: `--data-dir` (по умолчанию `data`), `--output-dir` (по умолчанию `output`).
+Команда за ≈ 5 секунд (лимит ТЗ — 5 минут) создаёт в `output/`: `nodes_roles.csv`, `clusters.csv`, `top_nodes.csv` и `graph.json`. Три CSV из последнего прогона уже лежат в репозитории — их можно посмотреть без запуска; повторный прогон воспроизводит их побайтно. Параметры: `--data-dir` (по умолчанию `data`), `--output-dir` (по умолчанию `output`).
 
 ### 2. Запустить приложение одной командой
 
@@ -268,7 +268,7 @@ Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/ask -ContentType '
 | `LLM_MODEL` | идентификатор модели у провайдера |
 | `LLM_TIMEOUT_SECONDS` | лимит времени на один вопрос, по умолчанию 30 секунд |
 
-LLM только выбирает функции `get_node`, `neighbors`, `common_collectors`, `top_by`, `path`. Ссылки на gid разрешены только из вопроса, выбранного узла или полученных результатов. Итоговые суммы, связи и карточки строятся серверными шаблонами **из результатов функций**; свободный текст модели в ответ не попадает. При ошибке провайдера срабатывает фолбэк на правилах.
+LLM только выбирает функции `get_node`, `neighbors`, `common_collectors`, `top_by`, `path`, `node_card` (пробелы в данных и следующий запрос). Ссылки на gid разрешены только из вопроса, выбранного узла или полученных результатов. Итоговые суммы, связи и карточки строятся серверными шаблонами **из результатов функций**; свободный текст модели в ответ не попадает. При ошибке провайдера срабатывает фолбэк на правилах.
 
 Запрос: `{"question": "...", "selected_gid": null | "<gid>"}`; явные gid в вопросе важнее выделения. Ответ: `answer`, `gids` (строковые идентификаторы упомянутых существующих узлов), `mode` (`llm` или `rules`). Подробный контракт и примеры вопросов — [docs/COPILOT_API.md](docs/COPILOT_API.md).
 
@@ -289,4 +289,4 @@ ollama create moneygraph-qwen3:4b -f backend/ollama.Modelfile
 python -m backend.check_copilot --all
 ```
 
-Команда проверяет пять типов вопросов и завершается ошибкой при `mode="rules"`. Установка, настройки, диагностика — [docs/OLLAMA_SETUP.md](docs/OLLAMA_SETUP.md). Ollama опциональна: без неё ассистент отвечает по правилам, а движок, выгрузки и интерфейс от LLM не зависят.
+Команда проверяет шесть типов вопросов и завершается ошибкой при `mode="rules"`. Установка, настройки, диагностика — [docs/OLLAMA_SETUP.md](docs/OLLAMA_SETUP.md). Ollama опциональна: без неё ассистент отвечает по правилам, а движок, выгрузки и интерфейс от LLM не зависят.

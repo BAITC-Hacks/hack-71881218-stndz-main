@@ -5,6 +5,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
+from backend.insights import node_card
 from backend.store import GraphStore
 
 Gid = Annotated[str, StringConstraints(strict=True, pattern=r"^[0-9]{18}$")]
@@ -55,6 +56,7 @@ MODELS = {
     "common_collectors": CollectorsArgs,
     "top_by": TopArgs,
     "path": PathArgs,
+    "node_card": NodeArgs,
 }
 DESCRIPTIONS = {
     "get_node": "Карточка узла: готовая роль, скоры, суммы, степени и ограничения.",
@@ -62,6 +64,8 @@ DESCRIPTIONS = {
     "common_collectors": "Общие прямые получатели ВСЕХ указанных разных gid, независимо от назначенной роли.",
     "top_by": "Узлы по убыванию разрешённой метрики выгрузки, с необязательным фильтром роли.",
     "path": "Кратчайший по числу рёбер НАПРАВЛЕННЫЙ путь в пределах max_hops; не трассировка одних и тех же денег.",
+    "node_card": "Справка по клиенту: крупнейшие контрагенты, на что обратить внимание, "
+                 "каких данных не хватает и какой запрос сделать следующим.",
 }
 
 
@@ -102,6 +106,9 @@ class GraphTools:
         if any(gid not in self.store.nodes for gid in gids):
             return {"error": "unknown_gid", "message": "Узел не найден в выгрузке."}
         return getattr(self, name)(**args)
+
+    def node_card(self, gid: str) -> dict:
+        return node_card(self.store, gid)
 
     def get_node(self, gid: str) -> dict:
         # Копия защищает общий store от случайного изменения потребителем.
