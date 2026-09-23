@@ -1,0 +1,6 @@
+# Бэкенд (Copilot API) и тесты. Зависимости пайплайна — в корневом requirements.txt
+-r ../requirements.txt
+fastapi>=0.110
+uvicorn>=0.29
+pytest>=8.0
+httpx>=0.27
