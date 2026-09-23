@@ -24,7 +24,7 @@ python -m pip install -r requirements.txt; if ($LASTEXITCODE -eq 0) { python run
 
 Рекомендуется предварительно создать виртуальную среду: `python -m venv .venv`, затем `source .venv/bin/activate` (Bash) или `.venv\Scripts\Activate.ps1` (PowerShell). Без активации используйте `.venv/Scripts/python.exe` (Windows) или `.venv/bin/python` (Linux/macOS).
 
-Команда за ≈ 5 секунд (лимит ТЗ — 5 минут) создаёт в `output/`: `nodes_roles.csv`, `clusters.csv`, `top_nodes.csv` и `graph.json`. Параметры: `--data-dir` (по умолчанию `data`), `--output-dir` (по умолчанию `output`).
+Команда за ≈ 5 секунд (лимит ТЗ — 5 минут) создаёт в `output/`: `nodes_roles.csv`, `clusters.csv`, `top_nodes.csv` и `graph.json`. Три CSV из последнего прогона уже лежат в репозитории — их можно посмотреть без запуска; повторный прогон воспроизводит их побайтно. Параметры: `--data-dir` (по умолчанию `data`), `--output-dir` (по умолчанию `output`).
 
 ### 2. Открыть интерфейс
 
