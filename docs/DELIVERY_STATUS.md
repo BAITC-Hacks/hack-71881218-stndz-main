@@ -22,6 +22,21 @@
 
 Разделы ниже — история решений и проверок.
 
+## Финальная проверка на чистой машине — `main` @ `99f30a4`
+
+Свежий клон, новая `.venv`, команды строго по README. Windows 11, Python 3.12.10, Node 24.19.
+
+| Шаг | Результат | Время |
+|---|---|---|
+| `pip install -r requirements.txt` | без ошибок | 90 с (скачивание) |
+| `python run_pipeline.py` | 4 файла в `output/`; закоммиченные CSV совпали побайтно, `git status` чистый | 10 с |
+| `pip install -r backend/requirements.txt` + `pytest tests` | **145 passed** | 75 с |
+| `npm --prefix frontend ci` + `run build` | `sync-data` подставил выгрузку движка (91 кластер), сборка без ошибок | 13 с |
+| `uvicorn backend.main:app` | `/api/health` → `source: output/graph.json`; карточка, `/api/resilience` (35 → 242), `/api/ask` отвечают | — |
+| `run preview` | страница 200, `/data/graph.json` — 2 248 узлов | — |
+
+Замечание: закоммиченный `frontend/public/data/graph.json` устарел (выгрузка прежнего `pipeline.py`), после `build`/`dev` он перезаписывается. Требование участнику 2 — закоммитить свежую синхронизированную версию.
+
 ## Два пайплайна: что официально и как переключаться
 
 В `main` сейчас два пайплайна:
