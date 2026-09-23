@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ForceGraph2D from 'react-force-graph-2d'
+import { LOCALES } from './i18n'
 import './App.css'
 
 const ROLE_COLOR = {
@@ -11,24 +12,6 @@ const ROLE_COLOR = {
   peripheral: '#8a94a3',
 }
 
-const ROLE_LABEL = {
-  consolidator: 'Консолидаторы',
-  coordinator: 'Координаторы',
-  distributor: 'Распределители',
-  transit: 'Транзит',
-  terminal: 'Конечные',
-  peripheral: 'Периферия',
-}
-
-const ROLE_HINT = {
-  consolidator: 'точки сбора средств',
-  coordinator: 'кандидаты в организаторы',
-  distributor: 'веерная раздача',
-  transit: 'пропуск без удержания',
-  terminal: 'деньги оседают',
-  peripheral: 'без яркой роли',
-}
-
 const ROLE_ORDER = [
   'consolidator',
   'coordinator',
@@ -38,10 +21,18 @@ const ROLE_ORDER = [
   'peripheral',
 ]
 
-function formatKzt(n) {
+const MAX_CHILDREN = 6
+const LEVEL_GAP = 110
+const SIBLING_GAP = 72
+
+function formatKzt(n, locale) {
   if (n == null || Number.isNaN(n)) return '—'
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)} млн ₸`
-  return new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 }).format(n) + ' ₸'
+  const loc = locale === 'en' ? 'en-US' : 'ru-RU'
+  if (n >= 1_000_000) {
+    const v = (n / 1_000_000).toFixed(1)
+    return locale === 'en' ? `${v}M ₸` : `${v} млн ₸`
+  }
+  return new Intl.NumberFormat(loc, { maximumFractionDigits: 0 }).format(n) + ' ₸'
 }
 
 function formatPct(n) {
@@ -49,7 +40,11 @@ function formatPct(n) {
   return `${sign}${n.toFixed(1)}%`
 }
 
-function buildEgoGraph(data, centerId, hop = 1) {
+function linkId(end) {
+  return typeof end === 'object' ? end.id : end
+}
+
+function buildEgoGraph(data, centerId, hop = 2) {
   const nodeMap = new Map(data.nodes.map((n) => [n.id, n]))
   if (!nodeMap.has(centerId)) return { nodes: [], links: [] }
 
@@ -58,8 +53,8 @@ function buildEgoGraph(data, centerId, hop = 1) {
   for (let h = 0; h < hop; h++) {
     const next = new Set()
     for (const link of data.links) {
-      const s = typeof link.source === 'object' ? link.source.id : link.source
-      const t = typeof link.target === 'object' ? link.target.id : link.target
+      const s = link.source
+      const t = link.target
       if (frontier.has(s)) {
         next.add(t)
         keep.add(t)
@@ -100,6 +95,177 @@ function buildPriorityGraph(data, limit = 60) {
   }
 }
 
+/** Adjacency for undirected traversal over directed money links */
+function buildAdj(links) {
+  const adj = new Map()
+  const add = (a, b, sum) => {
+    if (!adj.has(a)) adj.set(a, [])
+    adj.get(a).push({ id: b, sum_kzt: sum || 0 })
+  }
+  for (const l of links) {
+    const s = linkId(l.source)
+    const t = linkId(l.target)
+    add(s, t, l.sum_kzt)
+    add(t, s, l.sum_kzt)
+  }
+  for (const list of adj.values()) {
+    list.sort((a, b) => b.sum_kzt - a.sum_kzt)
+  }
+  return adj
+}
+
+/**
+ * Hierarchical tree from root: level 0 = root (top), then BFS layers.
+ * Excess children collapse into a synthetic branch node unless expanded.
+ */
+function layoutTreeGraph(subgraph, rootId, expanded, collapsedLabel) {
+  if (!subgraph.nodes.length) return { nodes: [], links: [], treeLinks: new Set() }
+
+  const nodeMap = new Map(subgraph.nodes.map((n) => [n.id, { ...n }]))
+  if (!nodeMap.has(rootId)) {
+    const fallback = subgraph.nodes
+      .slice()
+      .sort((a, b) => (b.priority_score || 0) - (a.priority_score || 0))[0]
+    if (!fallback) return { nodes: [], links: [], treeLinks: new Set() }
+    rootId = fallback.id
+  }
+
+  const adj = buildAdj(subgraph.links)
+  const parentOf = new Map()
+  const childrenOf = new Map()
+  const depthOf = new Map([[rootId, 0]])
+  const visited = new Set([rootId])
+  const queue = [rootId]
+
+  while (queue.length) {
+    const u = queue.shift()
+    const depth = depthOf.get(u)
+    const neigh = (adj.get(u) || []).filter((n) => !visited.has(n.id) && nodeMap.has(n.id))
+    const isExpanded = expanded.has(u)
+    const visible = isExpanded ? neigh : neigh.slice(0, MAX_CHILDREN)
+    const hidden = isExpanded ? [] : neigh.slice(MAX_CHILDREN)
+
+    childrenOf.set(u, [])
+    for (const n of visible) {
+      visited.add(n.id)
+      parentOf.set(n.id, u)
+      depthOf.set(n.id, depth + 1)
+      childrenOf.get(u).push(n.id)
+      queue.push(n.id)
+    }
+
+    if (hidden.length > 0) {
+      const cid = `__collapsed__${u}`
+      const collapsedNode = {
+        id: cid,
+        role: 'peripheral',
+        priority_score: 0,
+        is_seed: false,
+        depth: depth + 1,
+        cluster_id: -1,
+        _collapsed: true,
+        _parent: u,
+        _hiddenIds: hidden.map((h) => h.id),
+        _count: hidden.length,
+        label: collapsedLabel(hidden.length),
+      }
+      nodeMap.set(cid, collapsedNode)
+      parentOf.set(cid, u)
+      depthOf.set(cid, depth + 1)
+      childrenOf.get(u).push(cid)
+      visited.add(cid)
+    }
+  }
+
+  // Drop nodes not reachable from the root — keeps the hierarchy readable
+  for (const id of [...nodeMap.keys()]) {
+    if (!depthOf.has(id) && !String(id).startsWith('__collapsed__')) {
+      nodeMap.delete(id)
+    }
+  }
+
+  // Leaf-order for tidy horizontal placement
+  const leafOrder = []
+  function walk(id) {
+    const kids = childrenOf.get(id) || []
+    if (!kids.length) {
+      leafOrder.push(id)
+      return
+    }
+    for (const k of kids) walk(k)
+  }
+  walk(rootId)
+
+  const xOf = new Map()
+  leafOrder.forEach((id, i) => xOf.set(id, i * SIBLING_GAP))
+
+  function assignX(id) {
+    if (xOf.has(id)) return xOf.get(id)
+    const kids = childrenOf.get(id) || []
+    if (!kids.length) {
+      const x = (xOf.size || 0) * SIBLING_GAP
+      xOf.set(id, x)
+      return x
+    }
+    const xs = kids.map(assignX)
+    const x = (Math.min(...xs) + Math.max(...xs)) / 2
+    xOf.set(id, x)
+    return x
+  }
+  assignX(rootId)
+
+  // Center tree around x=0
+  const xs = [...xOf.values()]
+  const mid = xs.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : 0
+
+  const treeLinks = new Set()
+  const positioned = []
+  for (const [id, depth] of depthOf) {
+    const n = nodeMap.get(id)
+    if (!n) continue
+    const x = (xOf.get(id) ?? 0) - mid
+    const y = depth * LEVEL_GAP
+    n.fx = x
+    n.fy = y
+    n._treeDepth = depth
+    n._isRoot = id === rootId
+    positioned.push(n)
+    const p = parentOf.get(id)
+    if (p != null) treeLinks.add(`${p}|${id}`)
+  }
+
+  // Keep original money links among real nodes + tree edges to collapsed
+  const realIds = new Set(positioned.filter((n) => !n._collapsed).map((n) => n.id))
+  const links = []
+  for (const l of subgraph.links) {
+    const s = linkId(l.source)
+    const t = linkId(l.target)
+    if (realIds.has(s) && realIds.has(t)) {
+      links.push({
+        ...l,
+        source: s,
+        target: t,
+        _tree: treeLinks.has(`${s}|${t}`) || treeLinks.has(`${t}|${s}`),
+      })
+    }
+  }
+  for (const [id, p] of parentOf) {
+    const child = nodeMap.get(id)
+    if (child?._collapsed) {
+      links.push({
+        source: p,
+        target: id,
+        sum_kzt: 0,
+        n_tx: 0,
+        _tree: true,
+        _collapsedEdge: true,
+      })
+    }
+  }
+
+  return { nodes: positioned, links, treeLinks, rootId }
+}
+
 export default function App() {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
@@ -109,13 +275,30 @@ export default function App() {
   const [mode, setMode] = useState('network')
   const [dayIdx, setDayIdx] = useState(0)
   const [graphSize, setGraphSize] = useState({ width: 0, height: 0 })
+  const [locale, setLocale] = useState(() => {
+    try {
+      return localStorage.getItem('aml-locale') === 'en' ? 'en' : 'ru'
+    } catch {
+      return 'ru'
+    }
+  })
+  const [expanded, setExpanded] = useState(() => new Set())
   const fgRef = useRef()
   const graphHostRef = useRef(null)
+  const i = LOCALES[locale]
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('aml-locale', locale)
+    } catch {
+      /* ignore */
+    }
+  }, [locale])
 
   useEffect(() => {
     fetch('/data/graph.json')
       .then((r) => {
-        if (!r.ok) throw new Error('Нет graph.json — запусти python pipeline.py')
+        if (!r.ok) throw new Error(LOCALES.ru.loadError)
         return r.json()
       })
       .then((json) => {
@@ -155,23 +338,23 @@ export default function App() {
     return ROLE_ORDER.map((role, i) => {
       const count = data.meta.roles?.[role] || 0
       const share = (count / total) * 100
-      // «динамика» от доли роли — визуальный индикатор как в референсе
       const delta = Number((((share % 7) - 3.2) * (i % 2 === 0 ? 1 : -1)).toFixed(1))
       return { role, count, delta }
     })
   }, [data])
 
+  const rootId = selectedId || data?.top?.[0]?.gid
+
   const graphData = useMemo(() => {
-    if (!data) return { nodes: [], links: [] }
+    if (!data || !rootId) return { nodes: [], links: [] }
     let g =
-      mode === 'hunt' && selectedId
-        ? buildEgoGraph(data, selectedId, 1)
+      mode === 'hunt'
+        ? buildEgoGraph(data, rootId, 2)
         : buildPriorityGraph(data, 55)
 
     if (roleFilter !== 'all') {
       const ids = new Set(g.nodes.filter((n) => n.role === roleFilter).map((n) => n.id))
-      if (selectedId) ids.add(selectedId)
-      const linkId = (end) => (typeof end === 'object' ? end.id : end)
+      ids.add(rootId)
       g = {
         nodes: g.nodes.filter((n) => ids.has(n.id)),
         links: g.links.filter(
@@ -179,18 +362,27 @@ export default function App() {
         ),
       }
     }
-    return g
-  }, [data, mode, selectedId, roleFilter])
+
+    return layoutTreeGraph(g, rootId, expanded, i.collapsedBranch)
+  }, [data, mode, rootId, roleFilter, expanded, i])
 
   useEffect(() => {
     const fg = fgRef.current
     if (!fg || !graphSize.width || !graphSize.height) return
-    if (mode === 'hunt') return
     const t = setTimeout(() => {
-      fg.zoomToFit(400, 48)
-    }, 700)
+      fg.zoomToFit(400, 64)
+    }, 120)
     return () => clearTimeout(t)
-  }, [graphData.nodes.length, graphData.links.length, graphSize.width, graphSize.height, mode, roleFilter])
+  }, [
+    graphData.nodes.length,
+    graphData.links.length,
+    graphSize.width,
+    graphSize.height,
+    mode,
+    roleFilter,
+    rootId,
+    expanded,
+  ])
 
   const neighbors = useMemo(() => {
     if (!data || !selectedId) return { in: [], out: [] }
@@ -230,18 +422,26 @@ export default function App() {
   }, [data, selectedId])
 
   const focusNode = useCallback((id) => {
+    if (String(id).startsWith('__collapsed__')) return
     setSelectedId(id)
     setMode('hunt')
-    setTimeout(() => {
-      const fg = fgRef.current
-      if (!fg) return
-      const n = fg.graphData().nodes.find((x) => x.id === id)
-      if (n) {
-        fg.centerAt(n.x, n.y, 700)
-        fg.zoom(3.2, 700)
-      }
-    }, 800)
+    setExpanded(new Set())
   }, [])
+
+  const onNodeClick = useCallback(
+    (node) => {
+      if (node._collapsed) {
+        setExpanded((prev) => {
+          const next = new Set(prev)
+          next.add(node._parent)
+          return next
+        })
+        return
+      }
+      focusNode(node.id)
+    },
+    [focusNode],
+  )
 
   const onSearch = (e) => {
     e.preventDefault()
@@ -254,7 +454,7 @@ export default function App() {
     if (hit) {
       setError('')
       focusNode(hit.id)
-    } else setError(`gid не найден: ${q}`)
+    } else setError(i.notFound(q))
   }
 
   const zoomBy = (factor) => {
@@ -264,9 +464,10 @@ export default function App() {
   }
 
   if (error && !data) return <div className="error">{error}</div>
-  if (!data) return <div className="loading">Freedom Bank · загрузка графа…</div>
+  if (!data) return <div className="loading">{i.loading}</div>
 
   const day = data.timeseries?.[dayIdx]
+  const realNodeCount = graphData.nodes.filter((n) => !n._collapsed).length
 
   return (
     <div className="app">
@@ -278,46 +479,77 @@ export default function App() {
             alt="Freedom Bank Kazakhstan"
           />
           <div className="logo-text">
-            <strong>AML Desk</strong>
-            <span>Граф денег</span>
+            <strong>{i.brand}</strong>
+            <span>{i.brandSub}</span>
           </div>
         </a>
 
         <form className="search" onSubmit={onSearch}>
           <input
-            placeholder="Поиск клиента по gid…"
+            placeholder={i.searchPlaceholder}
             value={query}
             onChange={(e) => {
               setQuery(e.target.value)
               setError('')
             }}
+            aria-label={i.searchPlaceholder}
           />
-          <button type="submit">Найти</button>
+          <button type="submit">{i.searchBtn}</button>
         </form>
 
         <div className="top-actions">
-          <div className="seg">
+          <div className="seg" role="tablist" aria-label="View mode">
             <button
               type="button"
+              role="tab"
               className={mode === 'network' ? 'active' : ''}
               onClick={() => {
                 setMode('network')
                 setRoleFilter('all')
+                setExpanded(new Set())
               }}
             >
-              Network
+              {i.navNetwork}
             </button>
             <button
               type="button"
+              role="tab"
               className={mode === 'hunt' ? 'active' : ''}
               onClick={() => selectedId && setMode('hunt')}
             >
-              Hunt
+              {i.navHunt}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              className={mode === 'priority' ? 'active' : ''}
+              onClick={() => {
+                setMode('priority')
+                setRoleFilter('all')
+                if (data.top?.[0]) setSelectedId(data.top[0].gid)
+              }}
+            >
+              {i.navPriority}
             </button>
           </div>
-          <span className="chip">Priority</span>
-          <span className="chip">Июль 2026</span>
-          <div className="avatar" title="AML аналитик">
+          <span className="chip chip-period">{i.period}</span>
+          <div className="lang-toggle" role="group" aria-label="Language">
+            <button
+              type="button"
+              className={locale === 'ru' ? 'active' : ''}
+              onClick={() => setLocale('ru')}
+            >
+              {i.langRu}
+            </button>
+            <button
+              type="button"
+              className={locale === 'en' ? 'active' : ''}
+              onClick={() => setLocale('en')}
+            >
+              {i.langEn}
+            </button>
+          </div>
+          <div className="avatar" title={i.avatarTitle}>
             AML
           </div>
         </div>
@@ -325,7 +557,7 @@ export default function App() {
 
       <div className="workspace">
         <aside className="side">
-          <div className="side-head">Роли в сети</div>
+          <div className="side-head">{i.sideHead}</div>
           <ul className="role-list">
             <li>
               <button
@@ -337,12 +569,12 @@ export default function App() {
                   Σ
                 </div>
                 <div className="role-meta">
-                  <strong>Вся сеть</strong>
-                  <span>полный срез</span>
+                  <strong>{i.allNetwork}</strong>
+                  <span>{i.allNetworkHint}</span>
                 </div>
                 <div className="role-stats">
                   <b>{data.meta.n_nodes}</b>
-                  <span className="trend up">узлов</span>
+                  <span className="trend up">{i.nodesUnit}</span>
                 </div>
               </button>
             </li>
@@ -352,16 +584,27 @@ export default function App() {
                   type="button"
                   className={`role-item ${roleFilter === c.role ? 'active' : ''}`}
                   onClick={() => setRoleFilter(c.role)}
+                  title={i.roleTooltips[c.role]}
                 >
                   <div
                     className="role-ico"
                     style={{ background: ROLE_COLOR[c.role] }}
+                    title={i.roleTooltips[c.role]}
                   >
                     {c.role.slice(0, 1).toUpperCase()}
                   </div>
                   <div className="role-meta">
-                    <strong>{ROLE_LABEL[c.role]}</strong>
-                    <span>{ROLE_HINT[c.role]}</span>
+                    <strong className="role-name">
+                      {i.roles[c.role]}
+                      <span
+                        className="hint-dot"
+                        title={i.roleTooltips[c.role]}
+                        aria-label={i.roleTooltips[c.role]}
+                      >
+                        ?
+                      </span>
+                    </strong>
+                    <span>{i.roleHints[c.role]}</span>
                   </div>
                   <div className="role-stats">
                     <b>{c.count}</b>
@@ -377,8 +620,7 @@ export default function App() {
 
         <main className="canvas">
           <div className="graph-badge">
-            Показано <strong>{graphData.nodes.length}</strong> узлов ·{' '}
-            {graphData.links.length} связей
+            {i.graphShown(realNodeCount, graphData.links.filter((l) => !l._collapsedEdge).length)}
             {error ? ` · ${error}` : ''}
           </div>
           <div className="zoom">
@@ -397,50 +639,86 @@ export default function App() {
                 height={graphSize.height}
                 graphData={graphData}
                 nodeId="id"
-                linkDirectionalArrowLength={3.2}
+                linkDirectionalArrowLength={(l) => (l._collapsedEdge ? 0 : 3.2)}
                 linkDirectionalArrowRelPos={1}
                 linkWidth={(l) =>
-                  Math.max(0.35, Math.log10((l.sum_kzt || 1) + 1) * 0.55)
+                  l._collapsedEdge
+                    ? 1.2
+                    : Math.max(0.35, Math.log10((l.sum_kzt || 1) + 1) * 0.55)
                 }
-                linkColor={() => 'rgba(107, 117, 133, 0.35)'}
+                linkColor={(l) =>
+                  l._collapsedEdge
+                    ? 'rgba(107, 117, 133, 0.45)'
+                    : l._tree
+                      ? 'rgba(107, 117, 133, 0.45)'
+                      : 'rgba(107, 117, 133, 0.18)'
+                }
+                linkLineDash={(l) => (l._collapsedEdge ? [4, 3] : null)}
                 backgroundColor="rgba(0,0,0,0)"
+                enableNodeDrag={false}
+                cooldownTicks={0}
+                d3AlphaDecay={1}
                 nodeCanvasObject={(node, ctx, globalScale) => {
+                  if (node._collapsed) {
+                    const r = 14
+                    ctx.beginPath()
+                    ctx.arc(node.x, node.y, r, 0, 2 * Math.PI)
+                    ctx.fillStyle = '#eef2f6'
+                    ctx.fill()
+                    ctx.strokeStyle = '#6b7585'
+                    ctx.lineWidth = 1.2 / globalScale
+                    ctx.setLineDash([3 / globalScale, 2 / globalScale])
+                    ctx.stroke()
+                    ctx.setLineDash([])
+                    ctx.font = `${11 / globalScale}px Montserrat`
+                    ctx.fillStyle = '#6b7585'
+                    ctx.textAlign = 'center'
+                    ctx.textBaseline = 'middle'
+                    ctx.fillText(node.label || `+${node._count}`, node.x, node.y)
+                    ctx.textAlign = 'left'
+                    ctx.textBaseline = 'alphabetic'
+                    return
+                  }
+
                   const hot =
                     node.role === 'consolidator' ||
                     node.role === 'coordinator' ||
                     node.role === 'distributor'
+                  const isFocus = node.id === selectedId || node._isRoot
                   const r =
                     2.2 +
                     11 * (node.priority_score || 0) +
                     (node.is_seed ? 2 : 0) +
-                    (node.id === selectedId ? 3 : 0) +
+                    (isFocus ? 4 : 0) +
                     (hot ? 1.2 : 0)
+
+                  if (isFocus) {
+                    ctx.beginPath()
+                    ctx.arc(node.x, node.y, r + 6, 0, 2 * Math.PI)
+                    ctx.fillStyle = 'rgba(2, 177, 64, 0.12)'
+                    ctx.fill()
+                  }
+
                   ctx.beginPath()
                   ctx.arc(node.x, node.y, r, 0, 2 * Math.PI)
                   ctx.fillStyle = ROLE_COLOR[node.role] || '#888'
                   ctx.fill()
-                  if (node.id === selectedId || hot) {
-                    ctx.strokeStyle =
-                      node.id === selectedId ? '#0e151c' : 'rgba(2,177,64,0.7)'
-                    ctx.lineWidth = (node.id === selectedId ? 1.6 : 1) / globalScale
+                  if (isFocus || hot) {
+                    ctx.strokeStyle = isFocus ? '#0e151c' : 'rgba(2,177,64,0.7)'
+                    ctx.lineWidth = (isFocus ? 2 : 1) / globalScale
                     ctx.stroke()
                   }
-                  if (
-                    globalScale > 1.35 ||
-                    node.id === selectedId ||
-                    node.priority_score > 0.62
-                  ) {
-                    ctx.font = `${10 / globalScale}px Montserrat`
+                  if (globalScale > 1.1 || isFocus || node.priority_score > 0.62) {
+                    ctx.font = `${(isFocus ? 12 : 10) / globalScale}px Montserrat`
                     ctx.fillStyle = '#0e151c'
                     ctx.fillText(
                       String(node.id).slice(-6),
-                      node.x + r + 2,
+                      node.x + r + 3,
                       node.y + 3,
                     )
                   }
                 }}
-                onNodeClick={(node) => focusNode(node.id)}
-                cooldownTicks={90}
+                onNodeClick={onNodeClick}
               />
             )}
           </div>
@@ -448,38 +726,42 @@ export default function App() {
 
         <aside className="side right">
           <div className="panel-block">
-            <h2>Карточка клиента</h2>
+            <h2>{i.clientCard}</h2>
             {!selected ? (
-              <div className="sub">Кликните узел на графе или строку в топе</div>
+              <div className="sub">{i.clientEmpty}</div>
             ) : (
               <>
                 <div className="client-id" title={selected.id}>
                   {selected.id}
                 </div>
                 <div className="sub">
-                  {ROLE_LABEL[selected.role] || selected.role}
-                  {selected.is_seed ? ' · seed' : ''}
-                  {' · '}depth {selected.depth}
-                  {' · '}кластер #{selected.cluster_id}
+                  {i.roles[selected.role] || selected.role}
+                  {selected.is_seed ? ` · ${i.seed}` : ''}
+                  {' · '}
+                  {i.depth} {selected.depth}
+                  {' · '}
+                  {i.cluster} #{selected.cluster_id}
                 </div>
 
                 <div className="money-grid">
                   <div className="money-card in">
-                    <span>Получил</span>
-                    <b>{formatKzt(selected.in_kzt)}</b>
-                    <em>{selected.in_deg} плательщиков</em>
+                    <span>{i.received}</span>
+                    <b>{formatKzt(selected.in_kzt, locale)}</b>
+                    <em>{i.payers(selected.in_deg)}</em>
                   </div>
                   <div className="money-card out">
-                    <span>Отправил</span>
-                    <b>{formatKzt(selected.out_kzt)}</b>
-                    <em>{selected.out_deg} получателей</em>
+                    <span>{i.sent}</span>
+                    <b>{formatKzt(selected.out_kzt, locale)}</b>
+                    <em>{i.recipients(selected.out_deg)}</em>
                   </div>
                   <div className="money-card net">
-                    <span>Сальдо в графе</span>
-                    <b>{formatKzt(selected.in_kzt - selected.out_kzt)}</b>
+                    <span>{i.balance}</span>
+                    <b>{formatKzt(selected.in_kzt - selected.out_kzt, locale)}</b>
                     <em>
-                      {history.length} tx · priority{' '}
-                      {(selected.priority_score * 100).toFixed(0)}
+                      {i.txPriority(
+                        history.length,
+                        (selected.priority_score * 100).toFixed(0),
+                      )}
                     </em>
                   </div>
                 </div>
@@ -488,29 +770,29 @@ export default function App() {
 
                 <div className="tx-block">
                   <h3>
-                    История переводов
-                    <span>{history.length} шт.</span>
+                    {i.txHistory}
+                    <span>{i.txCount(history.length)}</span>
                   </h3>
                   {history.length === 0 ? (
-                    <div className="sub">Нет транзакций в выгрузке</div>
+                    <div className="sub">{i.txEmpty}</div>
                   ) : (
                     <div className="tx-scroll">
                       <table className="tx-table">
                         <thead>
                           <tr>
-                            <th>Дата</th>
-                            <th>Тип</th>
-                            <th>Контрагент</th>
-                            <th>Сумма</th>
+                            <th>{i.colDate}</th>
+                            <th>{i.colType}</th>
+                            <th>{i.colCounterparty}</th>
+                            <th>{i.colAmount}</th>
                           </tr>
                         </thead>
                         <tbody>
-                          {history.map((t, i) => (
-                            <tr key={`${t.date}-${t.counterparty}-${i}`}>
+                          {history.map((t, idx) => (
+                            <tr key={`${t.date}-${t.counterparty}-${idx}`}>
                               <td>{t.date.slice(5)}</td>
                               <td>
                                 <span className={`tx-dir ${t.dir}`}>
-                                  {t.dir === 'in' ? '↓ вход' : '↑ выход'}
+                                  {t.dir === 'in' ? i.txIn : i.txOut}
                                 </span>
                               </td>
                               <td>
@@ -525,7 +807,7 @@ export default function App() {
                               </td>
                               <td className={t.dir === 'in' ? 'sum-in' : 'sum-out'}>
                                 {t.dir === 'in' ? '+' : '−'}
-                                {formatKzt(t.sum_kzt)}
+                                {formatKzt(t.sum_kzt, locale)}
                               </td>
                             </tr>
                           ))}
@@ -537,15 +819,15 @@ export default function App() {
 
                 {(neighbors.in.length > 0 || neighbors.out.length > 0) && (
                   <div className="neighbors">
-                    <h3>Агрегат по связям</h3>
+                    <h3>{i.linkAgg}</h3>
                     {neighbors.in.map((n) => (
                       <button key={`i-${n.id}`} type="button" onClick={() => focusNode(n.id)}>
-                        ← …{n.id.slice(-8)} · {n.n_tx} tx · {formatKzt(n.sum_kzt)}
+                        ← …{n.id.slice(-8)} · {n.n_tx} tx · {formatKzt(n.sum_kzt, locale)}
                       </button>
                     ))}
                     {neighbors.out.map((n) => (
                       <button key={`o-${n.id}`} type="button" onClick={() => focusNode(n.id)}>
-                        → …{n.id.slice(-8)} · {n.n_tx} tx · {formatKzt(n.sum_kzt)}
+                        → …{n.id.slice(-8)} · {n.n_tx} tx · {formatKzt(n.sum_kzt, locale)}
                       </button>
                     ))}
                   </div>
@@ -555,15 +837,15 @@ export default function App() {
           </div>
 
           <div className="panel-block">
-            <h2>Priority ranking</h2>
-            <div className="sub">кого смотреть первым</div>
+            <h2>{i.priorityRank}</h2>
+            <div className="sub">{i.prioritySub}</div>
             <table className="rank-table">
               <thead>
                 <tr>
-                  <th>#</th>
-                  <th>Client</th>
-                  <th>Score</th>
-                  <th>Δ</th>
+                  <th>{i.colRank}</th>
+                  <th>{i.colClient}</th>
+                  <th>{i.colScore}</th>
+                  <th>{i.colDelta}</th>
                 </tr>
               </thead>
               <tbody>
@@ -581,8 +863,9 @@ export default function App() {
                         <span
                           className="role-pill"
                           style={{ color: ROLE_COLOR[t.role] }}
+                          title={i.roleTooltips[t.role]}
                         >
-                          {t.role}
+                          {i.roles[t.role] || t.role}
                         </span>
                       </td>
                       <td>{(t.priority_score * 100).toFixed(0)}</td>
@@ -601,15 +884,17 @@ export default function App() {
 
       <footer className="timeline">
         <div className="timeline-label">
-          Срез:&nbsp;
+          {i.slice}&nbsp;
           <strong>{day?.day || '2026-07'}</strong>
         </div>
         <div className="track">
           <div className="track-line" />
           <div className="months">
-            {['Июл', '', '', '', '', '', '', '', '', '', '', 'Авг'].map((m, i) => (
-              <span key={i}>{m}</span>
-            ))}
+            {[i.periodJul, '', '', '', '', '', '', '', '', '', '', i.periodAug].map(
+              (m, idx) => (
+                <span key={idx}>{m}</span>
+              ),
+            )}
           </div>
           <input
             type="range"
@@ -620,7 +905,7 @@ export default function App() {
           />
         </div>
         <div className="timeline-label" style={{ textAlign: 'right' }}>
-          {day ? formatKzt(day.sum_kzt) : '—'}
+          {day ? formatKzt(day.sum_kzt, locale) : '—'}
         </div>
       </footer>
     </div>
