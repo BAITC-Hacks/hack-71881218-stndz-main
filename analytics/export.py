@@ -12,19 +12,16 @@ from analytics import config
 from analytics.graph import GraphContext
 
 
-def add_pending_phase_fields(nodes_roles: pd.DataFrame) -> pd.DataFrame:
-    """Add columns owned by community and priority phases that are not implemented yet."""
+def add_pending_priority_field(nodes_roles: pd.DataFrame) -> pd.DataFrame:
+    """Add the priority column that is implemented in a later phase."""
     result = nodes_roles.copy()
-    result["cluster_id"] = config.CLUSTER_ID_PLACEHOLDER
     result["priority_score"] = config.PRIORITY_SCORE_PLACEHOLDER
-    return result.loc[:, config.NODE_ROLE_COLUMNS]
+    return result
 
 
-def make_empty_exports() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return schema-only clusters and top-node tables for the scaffold phase."""
-    clusters = pd.DataFrame(columns=config.CLUSTER_EXPORT_COLUMNS)
-    top_nodes = pd.DataFrame(columns=config.TOP_NODE_EXPORT_COLUMNS)
-    return clusters, top_nodes
+def make_empty_top_nodes() -> pd.DataFrame:
+    """Return the schema-only top-node table until priority ranking is implemented."""
+    return pd.DataFrame(columns=config.TOP_NODE_EXPORT_COLUMNS)
 
 
 def write_csv_exports(
@@ -77,6 +74,7 @@ def _feature_lookup(nodes_roles: pd.DataFrame) -> dict[int, dict[str, Any]]:
 
 def build_graph_payload(
     nodes_roles: pd.DataFrame,
+    clusters: pd.DataFrame,
     edges: pd.DataFrame,
     transactions: pd.DataFrame,
     context: GraphContext,
@@ -86,6 +84,8 @@ def build_graph_payload(
         raise ValueError("Graph and export tables do not describe the same input data")
 
     role_rows = _feature_lookup(nodes_roles)
+    if set(nodes_roles["cluster_id"]) != set(clusters["cluster_id"]):
+        raise ValueError("Node and cluster exports do not share the same cluster IDs")
     transaction_dates = (
         transactions.groupby(["src", "dst"], as_index=False, sort=True)
         .agg(first_date=("date", "min"), last_date=("date", "max"))
@@ -161,6 +161,32 @@ def build_graph_payload(
         for row in edges_with_dates.itertuples(index=False)
     ]
 
+    json_clusters = []
+    for cluster in clusters.itertuples(index=False):
+        members = nodes_roles.loc[nodes_roles["cluster_id"] == cluster.cluster_id]
+        role_counts = members["role"].value_counts().to_dict()
+        role_mix = {
+            role: int(role_counts[role])
+            for role in config.ROLE_NAMES
+            if role in role_counts
+        }
+        top_gids = (
+            cluster.top_gids.split(config.CLUSTER_GID_SEPARATOR)
+            if cluster.top_gids
+            else []
+        )
+        json_clusters.append(
+            {
+                "cluster_id": int(cluster.cluster_id),
+                "n_nodes": int(cluster.n_nodes),
+                "n_seed": int(cluster.n_seed),
+                "sum_kzt_internal": float(cluster.sum_kzt_internal),
+                "top_gids": top_gids,
+                "hypothesis": cluster.hypothesis,
+                "role_mix": role_mix,
+            }
+        )
+
     return {
         "meta": {
             "nodes": len(nodes_roles),
@@ -168,12 +194,12 @@ def build_graph_payload(
             "tx": len(transactions),
             "seeds": int(nodes_roles["is_seed"].sum()),
             "total_kzt": float(edges["sum_kzt"].sum()),
-            "clusters": config.ZERO,
+            "clusters": len(json_clusters),
             "generated_at": datetime.now(timezone.utc).replace(microsecond=config.ZERO).isoformat(),
         },
         "nodes": json_nodes,
         "edges": json_edges,
-        "clusters": [],
+        "clusters": json_clusters,
     }
 
 

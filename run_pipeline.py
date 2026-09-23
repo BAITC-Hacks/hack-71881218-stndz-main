@@ -4,10 +4,11 @@ import argparse
 from pathlib import Path
 
 from analytics import config
+from analytics.clusters import assign_communities
 from analytics.export import (
+    add_pending_priority_field,
     build_graph_payload,
-    add_pending_phase_fields,
-    make_empty_exports,
+    make_empty_top_nodes,
     write_csv_exports,
     write_graph_json,
 )
@@ -36,11 +37,22 @@ def main() -> None:
     features = add_structural_features(features, graph_context)
     nodes_roles = assign_roles(features)
     nodes_roles = add_role_evidence(nodes_roles)
-    nodes_roles = add_pending_phase_fields(nodes_roles)
-    clusters, top_nodes = make_empty_exports()
+    nodes_roles = add_pending_priority_field(nodes_roles)
+    nodes_roles, clusters = assign_communities(
+        nodes_roles,
+        edges,
+        graph_context.graph,
+    )
+    top_nodes = make_empty_top_nodes()
 
     write_csv_exports(nodes_roles, clusters, top_nodes, arguments.output_dir)
-    graph_payload = build_graph_payload(nodes_roles, edges, transactions, graph_context)
+    graph_payload = build_graph_payload(
+        nodes_roles,
+        clusters,
+        edges,
+        transactions,
+        graph_context,
+    )
     write_graph_json(graph_payload, arguments.output_dir)
 
     print(
