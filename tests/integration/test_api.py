@@ -154,6 +154,54 @@ def test_store_env_selects_graph_json(graph, monkeypatch):
     assert set(loaded.nodes) == set(ids.values())
 
 
+def to_engine_format(store):
+    """Та же выгрузка в формате движка участника 1 (docs/GRAPH_DATA_CONTRACT.md §5)."""
+    metric_keys = ("in_deg", "out_deg", "in_kzt", "out_kzt", "pass_through")
+    nodes = []
+    for node in store.nodes.values():
+        nodes.append({
+            "gid": node["id"], "depth": node["depth"], "is_seed": node["is_seed"],
+            "role": node["role"], "role_score": node["role_score"],
+            "priority_score": node["priority_score"], "evidence": node["evidence"],
+            "rank": 1 if node["role"] == "consolidator" else None,
+            "metrics": {k: node[k] for k in metric_keys},
+            "flags": ["truncated_by_depth"] if node["truncated_by_depth"] else [],
+        })
+    edges = [{"src": l["source"], "dst": l["target"], "sum_kzt": l["sum_kzt"], "n_tx": l["n_tx"]}
+             for l in store.links]
+    return {"meta": {}, "nodes": nodes, "edges": edges, "clusters": []}
+
+
+def test_store_reads_engine_format(graph, tmp_path):
+    store, ids = graph
+    path = tmp_path / "engine.json"
+    path.write_text(json.dumps(to_engine_format(store)), encoding="utf-8")
+    loaded = GraphStore.load(path)
+    assert set(loaded.nodes) == set(store.nodes)
+    assert {(l["source"], l["target"]) for l in loaded.links} == \
+        {(l["source"], l["target"]) for l in store.links}
+    c = loaded.nodes[ids["c"]]
+    assert (c["in_deg"], c["out_deg"], c["pass_through"]) == (2, 1, 0.5)
+    assert loaded.nodes[ids["e"]]["truncated_by_depth"] is True
+    assert [t["gid"] for t in loaded.top] == [ids["c"]]
+    # функции Copilot работают поверх нормализованного формата без изменений
+    tools = GraphTools(loaded)
+    assert tools.run("get_node", {"gid": ids["c"]})["in_deg"] == 2
+
+
+def test_store_reads_real_engine_output(tmp_path):
+    """Реальный прогон run_pipeline.py: API должен читать официальную выгрузку."""
+    import subprocess
+    import sys
+    from backend.store import ROOT
+    subprocess.run([sys.executable, str(ROOT / "run_pipeline.py"), "--output-dir", str(tmp_path)],
+                   cwd=ROOT, check=True, capture_output=True)
+    loaded = GraphStore.load(tmp_path / "graph.json")
+    assert len(loaded.nodes) == 2248
+    assert len(loaded.links) == 3119
+    assert sum(n["truncated_by_depth"] for n in loaded.nodes.values()) == 444
+
+
 def test_store_env_missing_file_fails_loudly(tmp_path, monkeypatch):
     monkeypatch.setenv("MONEYGRAPH_GRAPH_JSON", str(tmp_path / "missing.json"))
     with pytest.raises(FileNotFoundError, match="MONEYGRAPH_GRAPH_JSON"):

@@ -4,8 +4,8 @@
 Запуск: python -m pytest tests/integration -v
 
 Какой пайплайн проверять, задаёт переменная MONEYGRAPH_PIPELINE:
-  legacy (по умолчанию) — pipeline.py
-  engine                — run_pipeline.py + analytics/ (участник 1)
+  engine (по умолчанию) — run_pipeline.py + analytics/ (участник 1), официальный пайплайн
+  legacy                — прежний pipeline.py
 """
 
 import os
@@ -27,7 +27,7 @@ ALLOWED_ROLES = {
 }
 MAX_SECONDS = 300
 
-PIPELINE = os.environ.get("MONEYGRAPH_PIPELINE", "legacy")
+PIPELINE = os.environ.get("MONEYGRAPH_PIPELINE", "engine")
 COMMANDS = {
     "legacy": lambda dest: [
         str(ROOT / "pipeline.py"), "--data", str(DATA), "--out", str(dest / "out"),
